@@ -3,6 +3,7 @@
 //!
 //! Exit codes: 0 ok, 1 the app answered `ok: false`, 2 usage, 3 the app could not be reached.
 
+use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
@@ -53,6 +54,64 @@ extern "system" {
 extern "system" {
     fn GetStdHandle(which: u32) -> isize;
     fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+    fn GetCurrentPackageFullName(length: *mut u32, name: *mut u16) -> i32;
+    fn InitializeProcThreadAttributeList(list: *mut c_void, count: u32, flags: u32, size: *mut usize) -> i32;
+    fn UpdateProcThreadAttribute(
+        list: *mut c_void,
+        flags: u32,
+        attribute: usize,
+        value: *const c_void,
+        size: usize,
+        previous: *mut c_void,
+        returned: *mut usize,
+    ) -> i32;
+    fn DeleteProcThreadAttributeList(list: *mut c_void);
+    fn CreateProcessW(
+        application: *const u16,
+        command_line: *mut u16,
+        process_attributes: *const c_void,
+        thread_attributes: *const c_void,
+        inherit_handles: i32,
+        creation_flags: u32,
+        environment: *const c_void,
+        current_directory: *const u16,
+        startup_info: *const StartupInfoExW,
+        process_info: *mut ProcessInformation,
+    ) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
+}
+
+/// GetCurrentPackageFullName's answer when the process has no package identity.
+const APPMODEL_ERROR_NO_PACKAGE: i32 = 15700;
+const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+/// ProcThreadAttributeValue(18, thread: false, input: true, additive: false).
+const PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY: usize = 0x0002_0012;
+/// The processes the new one starts run outside an MSIX package, even when it runs in one.
+const PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE: u32 = 0x01;
+
+#[repr(C)]
+struct StartupInfoExW {
+    cb: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    position_and_size: [u32; 7],
+    flags: u32,
+    show_window: u16,
+    reserved2_size: u16,
+    reserved2: *mut u8,
+    std_input: isize,
+    std_output: isize,
+    std_error: isize,
+    attribute_list: *mut c_void,
+}
+
+#[repr(C)]
+struct ProcessInformation {
+    process: isize,
+    thread: isize,
+    process_id: u32,
+    thread_id: u32,
 }
 
 /// STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE (-10, -11, -12 as DWORD).
@@ -206,8 +265,86 @@ fn start_app() -> Result<(), String> {
     };
     keep_std_handles_home();
     let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    if in_package() {
+        // Under an MSIX-packaged program (Claude Desktop) whose policy keeps descendants in its
+        // package, the app and everything it starts would see the package's private copy of AppData
+        // and HKCU: the update installer would install there, not in the real install folder. So the
+        // app's own children (the installer, the restarted app) are sent outside the package. The
+        // plain spawn below is the fallback.
+        if spawn_children_outside_package(&exe, flags | CREATE_BREAKAWAY_FROM_JOB)
+            .or_else(|_| spawn_children_outside_package(&exe, flags))
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
     spawn(flags | CREATE_BREAKAWAY_FROM_JOB)
         .or_else(|_| spawn(flags))
         .map(|_| ())
         .map_err(|e| format!("cannot start {}: {e}", exe.display()))
+}
+
+/// Whether this process runs with an MSIX package identity.
+fn in_package() -> bool {
+    let mut length = 0u32;
+    unsafe { GetCurrentPackageFullName(&mut length, std::ptr::null_mut()) != APPMODEL_ERROR_NO_PACKAGE }
+}
+
+/// Starts `exe --background` the way start_app does, with the policy that every process it starts
+/// runs outside an MSIX package (PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY), which std's Command can't
+/// ask for. No handles are inherited, so the child gets no std handles, as with Stdio::null().
+fn spawn_children_outside_package(exe: &Path, flags: u32) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let mut command_line = wide(format!("\"{}\" --background", exe.display()).as_ref());
+    let folder = wide(exe.parent().unwrap_or(Path::new(".")).as_os_str());
+    let policy = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+    unsafe {
+        let mut size = 0usize;
+        InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
+        // usize elements keep the opaque list pointer-aligned.
+        let mut buffer = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+        let list = buffer.as_mut_ptr().cast::<c_void>();
+        if InitializeProcThreadAttributeList(list, 1, 0, &mut size) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = (|| {
+            if UpdateProcThreadAttribute(
+                list,
+                0,
+                PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY,
+                (&policy as *const u32).cast(),
+                std::mem::size_of::<u32>(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut startup: StartupInfoExW = std::mem::zeroed();
+            startup.cb = std::mem::size_of::<StartupInfoExW>() as u32;
+            startup.attribute_list = list;
+            let mut process: ProcessInformation = std::mem::zeroed();
+            if CreateProcessW(
+                std::ptr::null(),
+                command_line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                flags | EXTENDED_STARTUPINFO_PRESENT,
+                std::ptr::null(),
+                folder.as_ptr(),
+                &startup,
+                &mut process,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            CloseHandle(process.thread);
+            CloseHandle(process.process);
+            Ok(())
+        })();
+        DeleteProcThreadAttributeList(list);
+        result
+    }
 }

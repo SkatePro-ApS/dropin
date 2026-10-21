@@ -194,6 +194,9 @@ app. A new app command therefore needs no CLI change, only an entry in `cli/src/
 
 These files deliberately live outside `%APPDATA%`. Claude Desktop runs as an MSIX package, which redirects AppData
 writes into a private copy. A repo Claude added from there would never show up in the window you opened yourself.
+For the same reason, when `dropin` runs inside such a package, it starts the app with a policy that sends everything
+the app starts outside the package (`start_app` in `cli/src/main.rs`); otherwise an update would install into the
+package's private copy of `%LOCALAPPDATA%`.
 
 ## Testing
 
@@ -266,7 +269,5 @@ updated again (a new key means everyone reinstalls by hand).
   `git push -u origin <name>` once.
 - The window uses about 330 MB of memory, most of it WebView2's helper processes; `dropin-app.exe` itself uses about
   30 MB.
-- If Claude Desktop starts the app, it runs inside Claude Desktop's package, and quitting or updating Claude Desktop
-  can close it. A shortcut in the Startup folder avoids that.
 - An update is refused while a push review waits or a rebase, adopt or push runs, because the app exits for the
   installer.

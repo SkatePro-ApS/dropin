@@ -1,0 +1,11 @@
+[package]
+name = "dropin"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Command line for Drop In: one request to the running app, one JSON answer"
+
+# No Tauri here: the CLI must start in milliseconds.
+[dependencies]
+serde_json = "1"

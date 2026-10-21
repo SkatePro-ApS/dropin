@@ -1,0 +1,19 @@
+[workspace]
+members = ["app", "cli", "git"]
+resolver = "2"
+
+# One version for the app, the CLI and the installer; `dropin ping` and the updater read it.
+[workspace.package]
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/SkatePro-ApS/dropin"
+
+# Full debug info made the debug build cache ~3 GB; line tables keep backtraces readable.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Push Commits</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="bar">
+    <button class="icon-button" id="toggle-branches" title="Show or hide branches (Ctrl+B)" aria-label="Show or hide branches" aria-pressed="true">
+      <svg class="icon" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="5.5" r="1.5" /><path d="M4.5 5v6 M11.5 7c0 2.5-3 2.5-6.2 4.6" /></svg>
+    </button>
+    <button type="button" class="repo-pick" id="repo" title="Switch, add or remove repos (Ctrl+1 … Ctrl+9 switch)" aria-haspopup="menu">
+      <svg class="icon repo-icon" viewBox="0 0 16 16"><path d="M3 2.5h7.5L13 5v8.5H3z M10.5 2.5V5H13" /></svg>
+      <span class="repo-name" id="repo-name">No repo</span>
+      <svg class="icon chevron" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+    </button>
+    <div class="route" id="route"></div>
+    <span class="spacer"></span>
+    <span class="fetched" id="fetched"></span>
+    <button class="icon-button" id="refresh" title="Fetch and read again (F5)" aria-label="Fetch and read again">
+      <svg class="icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7 M13 2.5v3h-3" /></svg>
+    </button>
+    <button class="icon-button" id="update" title="Check for updates" aria-label="Check for updates">
+      <svg class="icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 5v5.5 M5.5 8.5L8 11l2.5-2.5" /></svg>
+    </button>
+  </header>
+  <div class="progress" id="progress" hidden></div>
+  <div class="alerts" id="alerts"></div>
+
+  <main class="work" id="work">
+    <div class="columns" id="columns">
+      <section class="branches" id="branches" aria-label="Branches">
+        <div class="toolbar">
+          <span class="pane-title">Branches</span>
+          <span class="spacer"></span>
+          <button class="icon-button" id="new-branch" title="New branch from HEAD (Ctrl+Shift+N)" aria-label="New branch">
+            <svg class="icon" viewBox="0 0 16 16"><path d="M8 3.5v9 M3.5 8h9" /></svg>
+          </button>
+          <button class="icon-button" id="fetch-all" title="Fetch every remote and drop branches deleted there" aria-label="Fetch every remote">
+            <svg class="icon" viewBox="0 0 16 16"><path d="M8 2.5v8 M4.5 7l3.5 3.5L11.5 7 M3 13.5h10" /></svg>
+          </button>
+        </div>
+        <div class="tree branch-tree" id="branch-tree" tabindex="0" role="tree" aria-label="Branches"></div>
+      </section>
+      <div class="gutter gutter-v" data-split="branches" id="branches-gutter" title="Drag to resize"></div>
+      <section class="commits" id="commits" aria-label="Commits">
+        <div class="list-cols" id="list-cols" aria-hidden="true">
+          <span class="col subject">Subject</span>
+          <span class="col author"><span class="col-grip" data-split="author" title="Drag to resize"></span>Author</span>
+          <span class="col age"><span class="col-grip" data-split="age" title="Drag to resize"></span>Age</span>
+        </div>
+        <div class="list" id="list" tabindex="0" role="listbox" aria-label="Commits"></div>
+      </section>
+      <div class="gutter gutter-v" data-split="columns" title="Drag to resize"></div>
+      <section class="detail" id="detail">
+        <div class="toolbar">
+          <button class="icon-button" id="expand" title="Expand all" aria-label="Expand all">
+            <svg class="icon" viewBox="0 0 16 16"><path d="M5 6l3-3 3 3 M5 10l3 3 3-3" /></svg>
+          </button>
+          <button class="icon-button" id="collapse" title="Collapse all" aria-label="Collapse all">
+            <svg class="icon" viewBox="0 0 16 16"><path d="M5 3l3 3 3-3 M5 13l3-3 3 3" /></svg>
+          </button>
+          <span class="toolbar-sep"></span>
+          <span class="tree-sum" id="tree-sum"></span>
+          <span class="spacer"></span>
+          <button class="icon-button" id="rollback" hidden title="Roll back the ticked files (Ctrl+Alt+Z on a row)" aria-label="Roll back the ticked files">
+            <svg class="icon" viewBox="0 0 16 16"><path d="M3.5 6.5h6a3.5 3.5 0 0 1 0 7h-3 M6 3.5l-3 3 3 3" /></svg>
+          </button>
+        </div>
+        <div class="tree" id="tree" tabindex="0" role="tree" aria-label="Changed files"></div>
+        <div class="gutter gutter-h" data-split="message" title="Drag to resize"></div>
+        <div class="message" id="message"></div>
+      </section>
+    </div>
+    <div class="gutter gutter-h gutter-diff" data-split="diff" id="diff-gutter" hidden title="Drag to resize"></div>
+    <section class="diff" id="diff" hidden aria-label="Diff">
+      <div class="diff-head">
+        <button class="icon-button" id="prev-file" title="Previous file (Alt+↑)" aria-label="Previous file">
+          <svg class="icon" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" /></svg>
+        </button>
+        <button class="icon-button" id="next-file" title="Next file (Alt+↓)" aria-label="Next file">
+          <svg class="icon" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+        </button>
+        <div class="diff-title" id="diff-title"></div>
+        <span class="diff-hint" id="diff-hint" role="status" hidden></span>
+        <span class="spacer"></span>
+        <div class="segmented" role="group" aria-label="Diff layout">
+          <button id="view-split" title="Side by side">Side by side</button>
+          <button id="view-unified" title="One column">Unified</button>
+        </div>
+        <button class="icon-button" id="undock-diff" title="Open diffs in a separate window" aria-label="Open the diff in a separate window">
+          <svg class="icon" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4 M13.5 2.5L8 8 M11.5 9v4.5h-9v-9H7" /></svg>
+        </button>
+        <button class="icon-button" id="close-diff" title="Close the diff (Esc)" aria-label="Close the diff">
+          <svg class="icon" viewBox="0 0 16 16"><path d="M4 4l8 8 M12 4l-8 8" /></svg>
+        </button>
+      </div>
+      <div class="diff-body" id="diff-body"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <button class="icon-button help" id="help" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
+    <span class="foot-note" id="foot-note"></span>
+    <span class="spacer"></span>
+    <button class="primary" id="push">Push</button>
+    <button id="cancel">Cancel</button>
+  </footer>
+
+  <div class="popover" id="keys" hidden>
+    <h3>Keys</h3>
+    <dl>
+      <dt>↑ ↓</dt><dd>Pick a commit, or a file in the tree</dd>
+      <dt>Enter</dt><dd>Open the picked file's diff</dd>
+      <dt>Alt+↑ Alt+↓</dt><dd>Previous or next file's diff</dd>
+      <dt>F7 · Shift+F7</dt><dd>Next or previous change, on into the next or previous file</dd>
+      <dt>Ctrl+Enter</dt><dd>Push; in the commit message, Commit</dd>
+      <dt>Ctrl+Shift+Enter</dt><dd>In the commit message: Commit and Push</dd>
+      <dt>Space</dt><dd>Tick or untick an uncommitted file or folder</dd>
+      <dt>Ctrl+Alt+Z</dt><dd>Roll back the picked uncommitted file or folder</dd>
+      <dt>F5</dt><dd>Fetch and read again</dd>
+      <dt>Ctrl+1 … 9</dt><dd>Switch repo</dd>
+      <dt>Ctrl+B</dt><dd>Show or hide the branches</dd>
+      <dt>Enter, double-click</dt><dd>Switch to the picked branch</dd>
+      <dt>F2 · Del</dt><dd>Rename or delete the picked branch or folder</dd>
+      <dt>Ctrl+Shift+N</dt><dd>New branch from HEAD</dd>
+      <dt>Esc</dt><dd>Close the diff, then the window</dd>
+    </dl>
+  </div>
+
+  <div class="menu" id="menu" role="menu" hidden></div>
+
+  <div class="modal-back" id="modal" hidden>
+    <form class="modal" id="modal-form" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title"></h2>
+      <p class="modal-text" id="modal-text"></p>
+      <input class="modal-input mono" id="modal-input" spellcheck="false" autocomplete="off">
+      <label class="modal-check" id="modal-check"><input type="checkbox" id="modal-checkbox"> <span id="modal-check-label"></span></label>
+      <pre class="modal-detail" id="modal-detail"></pre>
+      <p class="modal-error" id="modal-error"></p>
+      <div class="modal-buttons">
+        <button type="button" id="modal-cancel">Cancel</button>
+        <button type="submit" class="primary" id="modal-ok"></button>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>

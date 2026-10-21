@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Diff</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="diff-window.js"></script>
+</head>
+<body>
+<section class="diff diff-window" id="diff" aria-label="Diff">
+  <div class="diff-head">
+    <button class="icon-button" id="prev-file" title="Previous file (Alt+↑)" aria-label="Previous file">
+      <svg class="icon" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" /></svg>
+    </button>
+    <button class="icon-button" id="next-file" title="Next file (Alt+↓)" aria-label="Next file">
+      <svg class="icon" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+    </button>
+    <div class="diff-title" id="diff-title"></div>
+    <span class="diff-hint" id="diff-hint" role="status" hidden></span>
+    <span class="spacer"></span>
+    <div class="segmented" role="group" aria-label="Diff layout">
+      <button id="view-split" title="Side by side">Side by side</button>
+      <button id="view-unified" title="One column">Unified</button>
+    </div>
+    <button class="icon-button" id="dock-diff" title="Show diffs in the main window again" aria-label="Back into the main window">
+      <svg class="icon" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11z M2.5 9.5h11" /></svg>
+    </button>
+  </div>
+  <div class="diff-body" id="diff-body" tabindex="0"></div>
+</section>
+</body>
+</html>

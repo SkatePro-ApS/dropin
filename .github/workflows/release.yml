@@ -1,0 +1,40 @@
+# Builds the installer on a version tag and publishes it as a GitHub release, with the updater's
+# signature and latest.json. Installed copies find new versions through that latest.json.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The Tauri CLI from npm: a prebuilt binary, much faster than `cargo install tauri-cli`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @tauri-apps/cli@^2
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: app
+          tauriScript: tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: Drop In ${{ github.ref_name }}
+          releaseBody: See the commits since the previous release.
+          releaseDraft: false
+          prerelease: false

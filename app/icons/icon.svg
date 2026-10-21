@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A86F5"/>
+      <stop offset="1" stop-color="#1E4FC4"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#tile)"/>
+  <!-- a commit drops into the half-pipe and leaves up the far wall as a push -->
+  <g transform="translate(30 0)">
+  <circle cx="168" cy="300" r="84" fill="#fff"/>
+  <path d="M332 300 V520 Q332 800 512 800 Q692 800 692 520 V300"
+        fill="none" stroke="#fff" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M556 372 L692 232 L828 372"
+        fill="none" stroke="#fff" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

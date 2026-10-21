@@ -147,6 +147,8 @@ app/              dropin-app.exe: Tauri app, tray, named-pipe server, Tauri comm
   src/update.rs     update check and install (GitHub releases, signed)
   src/config.rs     where config and cache files live
   windows/hooks.nsh installer hooks: install the CLI, add it to PATH
+  icons/            icon.svg is the source; icon.ico and icon.png are made from it with
+                    `cargo tauri icon icons/icon.svg -o <tmp>` (copy back only those two)
   tauri.conf.json   window, CSP, installer and updater settings
 cli/              dropin.exe: no Tauri, so it starts in milliseconds
 git/              dropin-git crate: all git work, no Tauri, with its own tests

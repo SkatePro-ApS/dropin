@@ -33,6 +33,8 @@ fn main() {
             return;
         }
     };
+    // This is the instance now, so an update that was installing has finished (or was cancelled).
+    update::clear_updating();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

@@ -271,3 +271,6 @@ updated again (a new key means everyone reinstalls by hand).
   30 MB.
 - An update is refused while a push review waits or a rebase, adopt or push runs, because the app exits for the
   installer.
+- While an update installs, `dropin` commands wait for the new version instead of starting the old one, which the
+  installer couldn't replace. The marker for this is `%USERPROFILE%\.config\dropin\updating`. A cancelled installer
+  leaves it behind, and the commands then wait up to 2 minutes.

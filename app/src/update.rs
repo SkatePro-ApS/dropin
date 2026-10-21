@@ -4,10 +4,13 @@
 //! The updater plugin checks each installer against the public key in `tauri.conf.json` before it
 //! runs it, so a download that was not signed by the release workflow is refused.
 
+use std::path::PathBuf;
+
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
+use crate::config;
 use crate::dialog::Waiting;
 use crate::pipe::Busy;
 
@@ -54,10 +57,31 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
                 done += chunk;
                 let _ = progress.emit_to("main", "update-progress", json!({ "done": done, "total": total }));
             },
-            || {},
+            mark_updating,
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            clear_updating();
+            e.to_string()
+        })?;
     // On Windows the installer has taken over and the app has exited by now; elsewhere restart.
     app.restart();
+}
+
+/// Set while the installer replaces the app: the CLI then waits for the new version instead of
+/// starting the old exe, which the installer could not replace and would give up on. The new
+/// version removes it on start; the CLI ignores one older than 2 minutes (a cancelled installer).
+/// Must match `updating()` in cli/src/main.rs.
+fn marker() -> PathBuf {
+    config::dir().join("updating")
+}
+
+fn mark_updating() {
+    let _ = std::fs::create_dir_all(config::dir());
+    let _ = std::fs::write(marker(), "");
+}
+
+/// Removes the marker; called on start and when an install fails.
+pub fn clear_updating() {
+    let _ = std::fs::remove_file(marker());
 }

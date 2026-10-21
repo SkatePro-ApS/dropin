@@ -223,16 +223,21 @@ fn pipe_name() -> String {
 }
 
 /// Opens the pipe, starting the app once when nobody is listening.
+///
+/// While an update installs, nobody listens either, but starting the app then would run the old
+/// exe and make the installer give up; so it waits for the installer to start the new version.
 fn connect() -> Result<File, String> {
     let name = pipe_name();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut deadline = Instant::now() + Duration::from_secs(10);
     let mut started = false;
     loop {
         match OpenOptions::new().read(true).write(true).open(&name) {
             Ok(pipe) => return Ok(pipe),
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {}
             Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
-                if !started {
+                if updating() {
+                    deadline = Instant::now() + Duration::from_secs(10);
+                } else if !started {
                     start_app()?;
                     started = true;
                 }
@@ -244,6 +249,18 @@ fn connect() -> Result<File, String> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Whether the app is being replaced by an update: its marker exists and is under 2 minutes old,
+/// so a cancelled installer delays the CLI by 2 minutes at most. Must match app/src/update.rs.
+fn updating() -> bool {
+    let base = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+    let marker = Path::new(&base).join(".config").join("dropin").join("updating");
+    std::fs::metadata(marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(120))
 }
 
 /// Starts dropin-app.exe (beside this exe) in the background, detached from this console and,

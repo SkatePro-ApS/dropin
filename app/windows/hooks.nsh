@@ -9,6 +9,12 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   SetOutPath "$INSTDIR"
+  ; A dropin command running now (one waiting for the updated app, say) keeps dropin.exe open, and
+  ; Windows refuses to overwrite a running exe but lets it be renamed. So the old one moves aside;
+  ; the next install deletes it.
+  Delete "$INSTDIR\dropin.old.exe"
+  Rename "$INSTDIR\dropin.exe" "$INSTDIR\dropin.old.exe"
+  ClearErrors
   ; Tauri copies this file to target\release\nsis\x64, so the CLI is two folders up.
   File "${__FILEDIR__}\..\..\dropin.exe"
 
@@ -30,6 +36,7 @@
 
 !macro NSIS_HOOK_POSTUNINSTALL
   Delete "$INSTDIR\dropin.exe"
+  Delete "$INSTDIR\dropin.old.exe"
   RMDir "$INSTDIR"
 
   ; Take $INSTDIR back off the user's PATH.

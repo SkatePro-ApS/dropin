@@ -204,7 +204,7 @@ package's private copy of `%LOCALAPPDATA%`.
 cargo test -p dropin-git
 ```
 
-This runs 24 tests on throwaway repos in about 10 seconds. They cover the reviewed push, a refused push, a clean
+This runs 25 tests on throwaway repos in about 10 seconds. They cover the reviewed push, a refused push, a clean
 rebase that keeps staged files staged, conflict → adopt, the branch rules, and commits of ticked files. Add a test
 here for any change to git behaviour.
 
@@ -273,4 +273,5 @@ updated again (a new key means everyone reinstalls by hand).
   installer.
 - While an update installs, `dropin` commands wait for the new version instead of starting the old one, which the
   installer couldn't replace. The marker for this is `%USERPROFILE%\.config\dropin\updating`. A cancelled installer
-  leaves it behind, and the commands then wait up to 2 minutes.
+  leaves it behind, and the commands then wait up to 2 minutes. A waiting command keeps `dropin.exe` open, so the
+  installer renames it to `dropin.old.exe` (deleted by the next install) before copying the new one.

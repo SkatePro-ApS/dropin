@@ -236,6 +236,27 @@ fn rebase_stops_when_an_incoming_file_has_local_changes() {
     assert_eq!(head(&r.a), before);
 }
 
+/// The same commit is on both sides (pushed from another clone, then fetched) and the person
+/// edits its file again: the rebase leaves that file as it is, so it runs and drops the copy.
+#[test]
+fn rebase_runs_when_the_incoming_file_already_matches_head() {
+    let r = repos();
+    commit(&r.b, "shared.txt", "one\nTWO\nthree\n", "Same change");
+    sh(&r.b, &["push", "-q"]);
+    commit(&r.b, "b1.txt", "x", "B one");
+    sh(&r.b, &["push", "-q"]);
+    commit(&r.a, "shared.txt", "one\nTWO\nthree\n", "Same change");
+    commit(&r.a, "a1.txt", "x", "A one");
+    write(&r.a, "shared.txt", "one\nTWO\nthree\nlocal edit\n");
+
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let notice = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap().notice.unwrap();
+    assert_ne!(notice.tone, Tone::Error, "{notice:?}");
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    assert_eq!((subjects(&o), o.behind), (vec!["A one"], 0));
+    assert_eq!(std::fs::read_to_string(r.a.join("shared.txt")).unwrap(), "one\nTWO\nthree\nlocal edit\n");
+}
+
 /// Both sides change one line: the rebase stops, its worktree is kept back at the branch's
 /// commit, someone finishes it there, and adopt moves the branch onto the result.
 #[test]

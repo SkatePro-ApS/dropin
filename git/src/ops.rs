@@ -397,7 +397,10 @@ pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, Str
     }
     let up = &o.upstream;
     let merge_base = trimmed(dir, &["merge-base", "HEAD", up], "git merge-base")?;
-    let incoming = split_z(&out(dir, &["diff", "--name-only", "-z", &merge_base, up], "git diff")?);
+    // A file the upstream changed but HEAD already holds as the upstream has it (the same commit
+    // landed on both sides) is left alone by the rebase, so uncommitted work in it is no reason to stop.
+    let differs = split_z(&out(dir, &["diff", "--name-only", "-z", "HEAD", up], "git diff")?);
+    let incoming = overlap_of(&split_z(&out(dir, &["diff", "--name-only", "-z", &merge_base, up], "git diff")?), &differs);
     let mut local = split_z(&out(dir, &["diff", "--name-only", "-z"], "git diff")?);
     local.extend(split_z(&out(dir, &["diff", "--cached", "--name-only", "-z"], "git diff --cached")?));
     local.extend(split_z(&out(dir, &["ls-files", "--others", "--exclude-standard", "-z"], "git ls-files")?));

@@ -170,6 +170,21 @@ pub async fn files(app: AppHandle, name: String, sha: String) -> Result<Vec<drop
     pipe::blocking(move || dropin_git::files_of(Path::new(&repo.path), &sha)).await
 }
 
+/// The commits on `upstream` (the history the page shows) that match `query`, authored from
+/// `since` up to `until` (milliseconds; the page turns its dates into local midnights).
+#[tauri::command]
+pub async fn search(
+    app: AppHandle,
+    name: String,
+    upstream: String,
+    query: String,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<dropin_git::Found, String> {
+    let repo = repo_named(&app, &name)?;
+    pipe::blocking(move || dropin_git::search_history(Path::new(&repo.path), &upstream, &query, since, until)).await
+}
+
 /// One file's raw diff in a commit; the page shapes it.
 #[tauri::command]
 pub async fn diff(app: AppHandle, name: String, sha: String, file: dropin_git::FileChange) -> Result<Value, String> {

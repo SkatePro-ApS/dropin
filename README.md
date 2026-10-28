@@ -28,7 +28,7 @@ row with a commit box, and image diffs. It works with any git repo; nothing in i
 
 | Area | Features |
 | --- | --- |
-| Push | The commits to push and origin/main (last 20); incoming commits are dotted. Push sends exactly the commit that was reviewed. The alert strip covers behind + Rebase, a kept conflict, and Claude waiting. |
+| Push | The commits to push and origin/main (last 20); incoming commits are dotted. Search (Ctrl+F) filters the commits to push and searches origin/main's newest 10 000 commits by subject, message, author, email or sha; every word must match. From/To dates keep it to the commits authored in that range, with or without words. Push sends exactly the commit that was reviewed. The alert strip covers behind + Rebase, a kept conflict, and Claude waiting. |
 | Diff | Side by side (each side scrolls on its own) or unified. Images show before and after on a checkerboard. Pop the diff out into its own window. F7 / Shift+F7 step change by change. |
 | Branches | HEAD, Local and Remote in a tree with `/` folders and ↑↓ ahead/behind. Switch (Enter or double-click), new (Ctrl+Shift+N), rename (F2), delete (Del), delete on origin, rename or delete a folder, fetch all with prune. Ctrl+B hides the column. |
 | Commit | The **Uncommitted changes** row has a tree of Changes and Unversioned files with tri-state ticks. Commit (Ctrl+Enter), Commit and Push (Ctrl+Shift+Enter), Amend (off once HEAD is pushed), Rollback (Ctrl+Alt+Z). Only the ticked files go in the commit, and other staged files stay staged. |
@@ -204,7 +204,7 @@ package's private copy of `%LOCALAPPDATA%`.
 cargo test -p dropin-git
 ```
 
-This runs 25 tests on throwaway repos in about 10 seconds. They cover the reviewed push, a refused push, a clean
+This runs 27 tests on throwaway repos in about 10 seconds. They cover the reviewed push, a refused push, a clean
 rebase that keeps staged files staged, conflict → adopt, the branch rules, and commits of ticked files. Add a test
 here for any change to git behaviour.
 

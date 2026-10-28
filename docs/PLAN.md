@@ -95,3 +95,12 @@ the conflict to a Claude session; with nobody waiting, the alert offers **Copy f
     built and signed by GitHub Actions on a `v*` tag. The header's update button checks the latest GitHub release
     (quietly on start and every 6 hours, marking the button), then downloads, verifies the minisign signature,
     installs and restarts. It refuses while a review waits or a rebase, adopt or push runs.
+13. ✅ Search (requested 2026-10-28): a search box over the commit list (Ctrl+F; Esc clears, Enter goes to the list,
+    ↑/↓ still pick). It filters the commits to push in the page, and searches the upstream in git/ (`search_history`):
+    the 20-commit history is too short to find an older commit in. Every word must be in the subject, body, author or
+    email, or start the sha, the same rule in Rust and JS. It reads the newest 10 000 commits and says so when the
+    history goes on; at most 200 matches are listed. Filtering in Rust rather than with `--grep` / `--author` because
+    git ANDs those two, so one query could not match a word in either. A new query picks its first match.
+    From/To dates (added the same day) bound the author time, the one the list's Age shows: the page sends
+    local midnights (the To day included) and Rust filters, since git's --since/--until read the committer time.
+    The Subject / Author / Age header moved into the list, over the upstream's commits only, sticky as they scroll.

@@ -94,6 +94,17 @@ function view(name) {
       amend: false,
       // The message written before Amend put HEAD's in its place, back when Amend is unticked.
       amendSaved: '',
+      // The search box's text and its From/To dates (yyyy-mm-dd, '' for none), and what the
+      // upstream's history gave for them (`found` names its ref).
+      query: '',
+      from: '',
+      to: '',
+      // The next answer moves the pick to the first match: the query changed since.
+      repick: false,
+      found: null,
+      foundError: null,
+      searching: false,
+      searchToken: 0,
     });
   }
   return views.get(name);
@@ -101,6 +112,9 @@ function view(name) {
 
 /** Commits never change, so their file lists are kept for the app's life. */
 const filesCache = new Map();
+
+/** The Subject / Author / Age header: the list draws it over the upstream's commits only. */
+const listCols = $('list-cols');
 
 // ---------------------------------------------------------------- reading
 
@@ -120,6 +134,8 @@ async function read(name, fetch = false) {
     v.data = data;
     v.readAt = Date.now();
     if (fetch && !data.fetchError && !data.error) v.fetchedAt = Date.now();
+    // The upstream may have moved, so a search runs again.
+    if (searchOn(v)) search(name);
     keepSelection(v);
   } catch (error) {
     if (token !== v.token) return;
@@ -171,22 +187,28 @@ function progress(step) {
   $('progress').hidden = busyReads <= 0;
 }
 
-/** Every commit the list shows, in its order: outgoing first, then the upstream's history. */
-function listed(data) {
+/**
+ * Every commit the list shows, in its order: outgoing first, then the upstream's history. While
+ * searching: the outgoing commits that match, then what the search found on the upstream.
+ */
+function listed(v) {
+  const data = v.data;
   if (!data || data.error) return [];
-  return [...(data.commits ?? []), ...(data.history ?? [])];
+  if (!searchOn(v)) return [...(data.commits ?? []), ...(data.history ?? [])];
+  const words = searchWords(v.query);
+  return [...outgoingFound(v, words), ...foundCommits(v, words)];
 }
 
 /** Keeps the picked commit (or the Uncommitted row) when it is still listed; else picks the first. */
 function keepSelection(v) {
   if (v.sel === WORK) return;
-  const all = listed(v.data);
+  const all = listed(v);
   if (!all.some(c => c.sha === v.sel)) v.sel = all[0]?.sha ?? WORK;
 }
 
 /** The commit list's rows in order, as ↑/↓ step through them: the Uncommitted row first. */
 function rowOrder(v) {
-  return [WORK, ...listed(v.data).map(c => c.sha)];
+  return [WORK, ...listed(v).map(c => c.sha)];
 }
 
 /** The uncommitted files ticked for the next commit, in the list's order. */
@@ -484,10 +506,180 @@ function cancel() {
   api.invoke('cancel').catch(() => {});
 }
 
+// ---------------------------------------------------------------- search
+
+/** The search's words, lowercase; a commit must hold every one. */
+function searchWords(query) {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/** As `commit_matches` in git/src/ops.rs: each word is in the subject, body, author or email, or starts the sha. */
+function matches(c, words) {
+  const text = `${c.subject}\n${c.body}\n${c.author}\n${c.email}`.toLowerCase();
+  return words.every(w => text.includes(w) || c.sha.startsWith(w));
+}
+
+/**
+ * The From/To dates as author-time bounds in milliseconds: from the From day's local midnight up
+ * to the midnight after the To day, so both days are included. null for a date not set.
+ */
+function searchRange(v) {
+  const midnight = (day, add) => {
+    const [y, m, d] = day.split('-').map(Number);
+    return new Date(y, m - 1, d + add).getTime();
+  };
+  return { since: v.from ? midnight(v.from, 0) : null, until: v.to ? midnight(v.to, 1) : null };
+}
+
+/** True when a word or a date is set: the list then shows only what matches. */
+function searchOn(v) {
+  return Boolean(v.query.trim() || v.from || v.to);
+}
+
+/** True when the commit was authored within the From/To dates. */
+function inRange(c, range) {
+  return (range.since === null || c.at >= range.since) && (range.until === null || c.at < range.until);
+}
+
+/** The commits to push that match the search. */
+function outgoingFound(v, words) {
+  const range = searchRange(v);
+  return v.data.commits.filter(c => inRange(c, range) && matches(c, words));
+}
+
+/**
+ * The upstream's commits the search found. Until a newer search answers, the last answer is
+ * filtered by the words and dates set since, so narrowing a search shows at once.
+ */
+function foundCommits(v, words) {
+  const d = v.data;
+  if (!v.found || v.found.ref !== d.historyRef) return [];
+  const outgoing = new Set(d.commits.map(c => c.sha));
+  const range = searchRange(v);
+  return v.found.commits.filter(c => !outgoing.has(c.sha) && inRange(c, range) && matches(c, words));
+}
+
+let searchTimer = 0;
+
+function onSearchInput() {
+  if (!current) return;
+  const v = view(current);
+  v.query = $('search').value;
+  v.from = $('search-from').value;
+  v.to = $('search-to').value;
+  v.repick = searchOn(v);
+  clearTimeout(searchTimer);
+  // Clearing needs no git; a change waits a moment for the next keystroke.
+  if (!searchOn(v)) search(current);
+  else {
+    v.searching = Boolean(v.data?.historyRef);
+    searchTimer = setTimeout(() => search(current), 200);
+  }
+  showSearch();
+}
+
+/** Clears the words and the dates. */
+function clearSearch() {
+  $('search').value = '';
+  $('search-from').value = '';
+  $('search-to').value = '';
+  onSearchInput();
+}
+
+/** Searches the upstream's history, beyond the commits the list shows; a newer search wins. */
+async function search(name) {
+  const v = view(name);
+  const query = v.query.trim();
+  const ref = v.data?.historyRef;
+  const token = ++v.searchToken;
+  if (!searchOn(v) || !ref) {
+    v.found = null;
+    v.foundError = null;
+    v.searching = false;
+    if (name === current) showSearch();
+    return;
+  }
+  v.searching = true;
+  if (name === current) renderList();
+  try {
+    const found = await api.invoke('search', { name, upstream: ref, query, ...searchRange(v) });
+    if (token !== v.searchToken) return;
+    v.found = { ...found, ref };
+    v.foundError = null;
+  } catch (error) {
+    if (token !== v.searchToken) return;
+    v.found = null;
+    v.foundError = String(error);
+  }
+  v.searching = false;
+  if (name === current) showSearch();
+}
+
+/**
+ * Draws the list for the search. A new query picks its first match, settled once the search
+ * answers; otherwise the pick moves only when it no longer matches, and while nothing matches
+ * yet, it waits for the answer.
+ */
+function showSearch() {
+  const v = view(current);
+  const before = v.sel;
+  const all = listed(v);
+  if (v.repick && all.length) {
+    v.sel = all[0].sha;
+    if (!v.searching) v.repick = false;
+  } else if (all.length ? v.sel !== WORK && !all.some(c => c.sha === v.sel) : !v.searching) {
+    keepSelection(v);
+  }
+  renderSearch();
+  renderList();
+  if (v.sel !== before) {
+    renderMessage();
+    loadFiles();
+  }
+}
+
+function renderSearch() {
+  const box = $('search');
+  const v = current ? view(current) : null;
+  const query = v?.query ?? '';
+  // Each repo keeps its own search; the fields show the one of the repo shown.
+  if (box.value !== query) box.value = query;
+  box.disabled = !current;
+  for (const [id, day] of [['search-from', v?.from ?? ''], ['search-to', v?.to ?? '']]) {
+    const field = $(id);
+    if (field.value !== day) field.value = day;
+    field.disabled = !current;
+    field.classList.toggle('set', Boolean(day));
+  }
+  const ref = v?.data?.historyRef;
+  box.placeholder = ref ? `Search commits and ${ref}` : 'Search commits';
+  $('search-clear').hidden = !(query || v?.from || v?.to);
+  box.closest('.search-bar').classList.toggle('active', Boolean(v && searchOn(v)));
+}
+
+/** A span of `text` with each search word marked. */
+function markedSpan(className, text, words) {
+  const span = el('span', className);
+  if (!words.length) {
+    span.textContent = text;
+    return span;
+  }
+  const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
+  let at = 0;
+  for (const m of text.matchAll(new RegExp(escaped.join('|'), 'gi'))) {
+    if (m.index > at) span.append(text.slice(at, m.index));
+    span.append(el('mark', '', m[0]));
+    at = m.index + m[0].length;
+  }
+  span.append(text.slice(at));
+  return span;
+}
+
 // ---------------------------------------------------------------- rendering
 
 function renderAll() {
   renderHeader();
+  renderSearch();
   renderAlerts();
   renderBranches();
   renderList();
@@ -648,30 +840,60 @@ function renderList() {
     if (n !== undefined) h.append(el('span', 'n', n));
     return h;
   };
-  list.append(head(d.preview ? `After ${d.preview}` : 'To push', d.commits.length ? String(d.ahead) : undefined));
+  const on = searchOn(v);
+  const words = searchWords(v.query);
+  const outgoing = on ? outgoingFound(v, words) : d.commits;
+  const count = !d.commits.length ? undefined : on ? `${outgoing.length} of ${d.commits.length}` : String(d.ahead);
+  list.append(head(d.preview ? `After ${d.preview}` : 'To push', count));
   if (!d.commits.length) {
     const empty = el('div', 'empty');
     empty.append(el('strong', '', 'Nothing to push. '), `${d.branch} has no commits ${d.upstream} lacks.`);
     list.append(empty);
+  } else if (!outgoing.length) {
+    list.append(el('div', 'empty', 'None of them match.'));
   }
-  for (const c of d.commits) list.append(commitRow(v, c, 'outgoing'));
+  for (const c of outgoing) list.append(commitRow(v, c, 'outgoing', words));
 
   if (d.historyRef) {
-    list.append(head(d.historyRef, d.history.length ? `last ${d.history.length}` : undefined));
-    if (d.historyError) list.append(el('div', 'empty', d.historyError));
     const incoming = new Set((d.incoming ?? []).map(c => c.sha));
-    for (const c of d.history) list.append(commitRow(v, c, incoming.has(c.sha) ? 'history incoming' : 'history'));
+    const kind = c => (incoming.has(c.sha) ? 'history incoming' : 'history');
+    if (on) {
+      renderFound(v, list, head, words, kind);
+    } else {
+      list.append(head(d.historyRef, d.history.length ? `last ${d.history.length}` : undefined));
+      if (d.historyError) list.append(el('div', 'empty', d.historyError));
+      else if (d.history.length) list.append(listCols);
+      for (const c of d.history) list.append(commitRow(v, c, kind(c)));
+    }
   }
   list.querySelector('.row.selected')?.scrollIntoView({ block: 'nearest' });
 }
 
-function commitRow(v, c, kind) {
+/** The upstream's section while searching: what the search found, and how far back it looked. */
+function renderFound(v, list, head, words, kind) {
+  const d = v.data;
+  const found = v.found?.ref === d.historyRef ? v.found : null;
+  const hits = foundCommits(v, words);
+  const n = found ? `${found.matched} ${found.matched === 1 ? 'match' : 'matches'}` : undefined;
+  const h = head(d.historyRef, v.searching ? 'searching…' : n);
+  if (found && !found.whole) h.append(el('span', 'note', `in the newest ${found.searched.toLocaleString('en-GB')} commits`));
+  list.append(h);
+  if (v.foundError) list.append(el('div', 'empty', v.foundError));
+  else if (found && !hits.length && !v.searching) list.append(el('div', 'empty', `No commit on ${d.historyRef} matches.`));
+  if (hits.length) list.append(listCols);
+  for (const c of hits) list.append(commitRow(v, c, kind(c), words));
+  if (found && found.matched > found.commits.length && !v.searching) {
+    list.append(el('div', 'empty', `Showing the newest ${found.commits.length}. Add a word or a date to narrow the search.`));
+  }
+}
+
+function commitRow(v, c, kind, words = []) {
   const row = el('div', `row ${kind}`);
   row.setAttribute('role', 'option');
   row.dataset.sha = c.sha;
   row.title = `${c.short} · ${c.author} · ${c.date}`;
   if (kind.includes('incoming')) row.append(el('span', 'dot'));
-  row.append(el('span', 'subject', c.subject), el('span', 'author', c.author), el('span', 'age', age(c.at)));
+  row.append(markedSpan('subject', c.subject, words), markedSpan('author', c.author, words), el('span', 'age', age(c.at)));
   if (c.sha === v.sel) {
     row.classList.add('selected');
     row.setAttribute('aria-selected', 'true');
@@ -724,7 +946,7 @@ function pickCommit(sha) {
 }
 
 function selectedCommit(v) {
-  return listed(v.data).find(c => c.sha === v.sel) ?? null;
+  return listed(v).find(c => c.sha === v.sel) ?? null;
 }
 
 function renderDetail() {
@@ -2111,6 +2333,19 @@ function onKey(event) {
     }
     return;
   }
+  if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    if (current) $('search').select();
+    return;
+  }
+  // In the search fields: Esc clears the search, then leaves it; Enter goes to the list; ↑/↓ still
+  // pick a commit from the search box (in a date field they change the date).
+  if (event.target.closest?.('.search-bar') && (event.key === 'Escape' || event.key === 'Enter')) {
+    event.preventDefault();
+    if (event.key === 'Escape' && current && searchOn(view(current))) clearSearch();
+    else $('list').focus();
+    return;
+  }
   if (event.ctrlKey && event.altKey && event.key.toLowerCase() === 'z') {
     event.preventDefault();
     const v = current ? view(current) : null;
@@ -2132,6 +2367,7 @@ function onKey(event) {
     event.preventDefault();
     if (!keys.hidden) keys.hidden = true;
     else if (current && view(current).diffOpen) closeDiff();
+    else if (current && searchOn(view(current))) clearSearch();
     else cancel();
     return;
   }
@@ -2158,7 +2394,7 @@ function onKey(event) {
     }
     return;
   }
-  if (!current || event.target.tagName === 'SELECT') return;
+  if (!current || event.target.tagName === 'SELECT' || event.target.type === 'date') return;
   if (event.altKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
     event.preventDefault();
     stepFile(event.key === 'ArrowDown' ? 1 : -1);
@@ -2200,7 +2436,7 @@ function wireGutters() {
     if (split === 'author' || split === 'age') $('commits').style.setProperty(`--${split}-size`, `${px}px`);
   };
   for (const [split, px] of Object.entries(sizes)) apply(split, px);
-  for (const gutter of document.querySelectorAll('.gutter, .col-grip')) {
+  for (const gutter of [...document.querySelectorAll('.gutter'), ...listCols.querySelectorAll('.col-grip')]) {
     gutter.addEventListener('pointerdown', down => {
       down.preventDefault();
       gutter.setPointerCapture(down.pointerId);
@@ -2217,7 +2453,7 @@ function wireGutters() {
         // A column's grip is its left edge, and its right edge stays put: the subject takes the rest.
         if (split === 'author' || split === 'age') {
           px = gutter.parentElement.getBoundingClientRect().right - (event.clientX - grab);
-          const subject = $('list-cols').querySelector('.subject').getBoundingClientRect().width;
+          const subject = listCols.querySelector('.subject').getBoundingClientRect().width;
           px = Math.min(px, gutter.parentElement.getBoundingClientRect().width + subject - 80);
         }
         px = Math.max(split === 'age' ? 40 : 60, Math.round(px));
@@ -2254,6 +2490,13 @@ async function start() {
   $('update').onclick = onUpdate;
   $('push').onclick = push;
   $('cancel').onclick = cancel;
+  $('search').addEventListener('input', onSearchInput);
+  $('search-from').addEventListener('input', onSearchInput);
+  $('search-to').addEventListener('input', onSearchInput);
+  $('search-clear').onclick = () => {
+    clearSearch();
+    $('search').focus();
+  };
   docked = new DiffView({
     invoke: api.invoke,
     title: $('diff-title'),

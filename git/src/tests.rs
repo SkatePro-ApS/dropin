@@ -157,6 +157,60 @@ fn outgoing_lists_both_ways_after_fetch() {
 }
 
 #[test]
+fn search_finds_upstream_commits_beyond_the_history() {
+    let r = repos();
+    for i in 0..25 {
+        commit(&r.b, &format!("f{i}.txt"), "x", &format!("Filler {i}"));
+    }
+    write(&r.b, "pay.txt", "x");
+    sh(&r.b, &["add", "pay.txt"]);
+    sh(&r.b, &["commit", "-q", "-m", "Fix checkout", "-m", "The Payment step lost the basket."]);
+    sh(&r.b, &["push", "-q"]);
+    sh(&r.a, &["fetch", "-q"]);
+
+    // "Start" is 26 commits back, beyond the 20 the history shows.
+    let found = search_history(&r.a, "origin/main", "start", None, None).unwrap();
+    assert_eq!((found.matched, found.searched, found.whole), (1, 27, true));
+    assert_eq!(found.commits[0].subject, "Start");
+
+    // Every word must match, in the subject, the body or the author.
+    let found = search_history(&r.a, "origin/main", "PAYMENT checkout test", None, None).unwrap();
+    assert_eq!(found.commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["Fix checkout"]);
+    assert_eq!(search_history(&r.a, "origin/main", "payment nothing", None, None).unwrap().matched, 0);
+
+    let sha = found.commits[0].sha.clone();
+    assert_eq!(search_history(&r.a, "origin/main", &sha[..7], None, None).unwrap().commits[0].sha, sha);
+    assert_eq!(search_history(&r.a, "origin/main", "filler", None, None).unwrap().matched, 25);
+    assert!(search_history(&r.a, "--all", "x", None, None).is_err());
+}
+
+#[test]
+fn search_keeps_to_the_dates() {
+    let r = repos();
+    let dated = |file: &str, subject: &str, date: &str| {
+        write(&r.b, file, "x");
+        sh(&r.b, &["add", file]);
+        sh(&r.b, &["commit", "-q", "-m", subject, "--date", date]);
+    };
+    dated("a.txt", "March fix", "2020-03-01T12:00:00Z");
+    dated("b.txt", "April fix", "2020-04-15T12:00:00Z");
+    sh(&r.b, &["push", "-q"]);
+    sh(&r.a, &["fetch", "-q"]);
+    let subjects = |query: &str, since: Option<i64>, until: Option<i64>| {
+        let found = search_history(&r.a, "origin/main", query, since, until).unwrap();
+        found.commits.into_iter().map(|c| c.subject).collect::<Vec<_>>()
+    };
+    let (march1, april1, april15) = (1_583_020_800_000, 1_585_699_200_000, 1_586_952_000_000);
+
+    assert_eq!(subjects("fix", Some(march1), Some(april1)), ["March fix"]);
+    assert_eq!(subjects("fix", Some(april1), None), ["April fix"]);
+    // No words: every commit in the range ("Start" is from today); `since` is included and `until` is not.
+    assert_eq!(subjects("", Some(april15), None), ["April fix", "Start"]);
+    assert_eq!(subjects("", Some(march1), Some(april15)), ["March fix"]);
+    assert!(subjects("", None, Some(march1)).is_empty());
+}
+
+#[test]
 fn push_sends_the_reviewed_head_only() {
     let r = repos();
     commit(&r.a, "a1.txt", "x", "A one");

@@ -13,6 +13,8 @@ use crate::run::*;
 const LIST_LIMIT: usize = 200;
 /// The upstream's newest commits shown as history.
 const HISTORY: usize = 20;
+/// A search reads this many of the upstream's newest commits.
+const SEARCH_DEPTH: usize = 10_000;
 const FETCH: Duration = Duration::from_secs(60);
 const PUSH: Duration = Duration::from_secs(180);
 const WORKTREE: Duration = Duration::from_secs(180);
@@ -149,6 +151,45 @@ fn read_history(dir: &Path, upstream: &str, o: &mut Outgoing) {
         Ok(ran) => o.history_error = Some(format!("git log failed: {}", tail(&ran.stderr, 2))),
         Err(e) => o.history_error = Some(e),
     }
+}
+
+/// Commits on a ref that match a search, newest first.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Found {
+    pub commits: Vec<Commit>,
+    /// Matches in all; `commits` holds at most LIST_LIMIT of them.
+    pub matched: usize,
+    /// Commits read.
+    pub searched: usize,
+    /// False when the history goes on beyond the commits read.
+    pub whole: bool,
+}
+
+/// True when every word of the search is in the commit's subject, body, author or email
+/// (case aside), or starts its sha. `words` are lowercase.
+pub fn commit_matches(c: &Commit, words: &[String]) -> bool {
+    let text = format!("{}\n{}\n{}\n{}", c.subject, c.body, c.author, c.email).to_lowercase();
+    words.iter().all(|w| text.contains(w.as_str()) || c.sha.starts_with(w.as_str()))
+}
+
+/// The commits on `upstream` (the history the dialog shows) that match `query`, searched in its
+/// newest SEARCH_DEPTH commits. `since` and `until` bound the author time in milliseconds
+/// (`since` included, `until` not), as `Commit::at` holds it.
+pub fn search_history(dir: &Path, upstream: &str, query: &str, since: Option<i64>, until: Option<i64>) -> Result<Found, String> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    // One more than the depth tells whether the history goes on.
+    let max = format!("--max-count={}", SEARCH_DEPTH + 1);
+    let mut all = parse_log(&out(dir, &["log", LOG_FORMAT, LOG_DATE, &max, "--end-of-options", upstream, "--"], "git log")?);
+    let whole = all.len() <= SEARCH_DEPTH;
+    all.truncate(SEARCH_DEPTH);
+    let searched = all.len();
+    // Author time, as the list's Age shows it; git's --since/--until read the committer's.
+    let in_range = |c: &Commit| since.is_none_or(|s| c.at >= s) && until.is_none_or(|u| c.at < u);
+    let mut commits: Vec<Commit> = all.into_iter().filter(|c| in_range(c) && commit_matches(c, &words)).collect();
+    let matched = commits.len();
+    commits.truncate(LIST_LIMIT);
+    Ok(Found { commits, matched, searched, whole })
 }
 
 /// What a push of the current branch would send, and what the upstream has that it lacks.

@@ -295,16 +295,18 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 .gutter.dragging, .gutter:hover { background: var(--accent); }
 
 .commits { --author-size: 120px; --age-size: 56px; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-/* Both keep room for the list's scrollbar, so the headers stay over their columns. */
 .list { flex: 1; overflow: auto; scrollbar-gutter: stable; padding: 6px 0 10px; outline: none; }
+/* Over the upstream's commits only; it stays at the top while they scroll under it. */
 .list-cols {
-  flex: none;
+  position: sticky;
+  top: -6px;
+  z-index: 1;
   display: flex;
   gap: 8px;
-  padding: 5px 14px 5px 26px;
+  padding: 4px 14px 4px 26px;
+  margin-bottom: 2px;
   border-bottom: 1px solid var(--line);
-  overflow: hidden;
-  scrollbar-gutter: stable;
+  background: var(--bg);
   font-size: 12px;
   font-weight: 500;
   color: var(--faint);
@@ -351,6 +353,59 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 .row.selected { background: var(--select-quiet); }
 .list:focus .row.selected, .list:focus-within .row.selected { background: var(--select); }
 .row.selected .subject { color: var(--text); }
+.row mark { background: var(--info-bg); color: var(--info-text); border-radius: 2px; }
+.row.selected mark { background: transparent; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.list-head .note { margin-left: auto; letter-spacing: 0; font-weight: 400; text-transform: none; }
+
+/* The search field fills the commits column's toolbar, the clear button at its end; in a narrow
+   column the dates go to a row of their own. */
+.search-bar { gap: 0; flex-wrap: wrap; row-gap: 2px; }
+.search {
+  flex: 1 1 150px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--faint);
+}
+.search:hover { background: var(--hover); }
+.search:focus-within { background: var(--surface); border-color: var(--line-strong); color: var(--dim); }
+.search .icon { flex: none; width: 14px; height: 14px; }
+.search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+.search input::placeholder { color: var(--faint); }
+.search-bar.active .search { color: var(--accent); }
+/* From/To: quiet until hovered, focused or set. */
+.dates { flex: none; display: flex; align-items: center; gap: 2px; margin-left: 4px; color: var(--faint); }
+.dates input {
+  width: 118px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--faint);
+  font: inherit;
+  font-size: 12px;
+  color-scheme: light dark;
+}
+.dates input:hover { background: var(--hover); }
+.dates input:focus { outline: 0; background: var(--surface); border-color: var(--line-strong); color: var(--text); }
+.dates input.set { color: var(--accent); }
+
 .empty { padding: 14px; color: var(--dim); line-height: 1.5; user-select: text; }
 .empty strong { color: var(--text); font-weight: 600; }
 

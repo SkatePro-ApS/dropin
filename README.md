@@ -28,7 +28,7 @@ row with a commit box, and image diffs. It works with any git repo; nothing in i
 
 | Area | Features |
 | --- | --- |
-| Push | The commits to push and origin/main (last 20); incoming commits are dotted. Search (Ctrl+F) filters the commits to push and searches origin/main's newest 10 000 commits by subject, message, author, email or sha; every word must match. From/To dates keep it to the commits authored in that range, with or without words. Push sends exactly the commit that was reviewed. The alert strip covers behind + Rebase, a kept conflict, and Claude waiting. |
+| Push | The commits to push and origin/main (last 20); incoming commits are dotted. Search (Ctrl+F) filters the commits to push and searches origin/main's newest 10 000 commits by subject, message, author, email or sha; every word must match. From/To dates keep it to the commits authored in that range, with or without words. Push sends exactly the commit that was reviewed. Untick commits to hold them back from a push. The alert strip covers behind + Rebase (with Shelve and rebase when uncommitted work is in the way), a kept conflict, a shelf left in the stash, and Claude waiting. |
 | Diff | Side by side (each side scrolls on its own) or unified. Images show before and after on a checkerboard. Pop the diff out into its own window. F7 / Shift+F7 step change by change. |
 | Branches | HEAD, Local and Remote in a tree with `/` folders and ↑↓ ahead/behind. Switch (Enter or double-click), new (Ctrl+Shift+N), rename (F2), delete (Del), delete on origin, rename or delete a folder, fetch all with prune. Ctrl+B hides the column. |
 | Commit | The **Uncommitted changes** row has a tree of Changes and Unversioned files with tri-state ticks. Commit (Ctrl+Enter), Commit and Push (Ctrl+Shift+Enter), Amend (off once HEAD is pushed), Rollback (Ctrl+Alt+Z). Only the ticked files go in the commit, and other staged files stay staged. |
@@ -131,6 +131,23 @@ Finish it in that worktree (`git rebase --continue` until it is done), then run 
 `dropin abandon` to drop it. A repo holds one kept conflict at a time, and a new rebase is refused until it is
 adopted or abandoned.
 
+### Shelving work in the way
+
+A rebase stops before it starts when an incoming file has uncommitted changes. The refusal offers **Shelve and
+rebase** (`dropin rebase --shelve`; adopt has the same): the changes in those files, and only those, go to git's
+stash while the branch moves, then come back, staged files staged again. If they clash with the incoming changes,
+the files get conflict markers and the shelf stays in the stash. A shelf that is still there shows as an alert with
+**Unshelve** and **Drop…**. Nothing is shelved unless you ask.
+
+### Holding commits back
+
+Each commit to push has a tick (Space toggles it). Untick a commit to hold it back from the push:
+
+- If the held commits are the newest ones, the push stops below them and nothing is rewritten.
+- If an older commit is held back, the branch is reordered first, in a separate worktree: the pushed commits go
+  first and the held ones on top, with new shas. Your files don't change, since the end result is the same tree.
+  If a pushed commit needs a held one (they change the same lines), nothing is pushed or changed.
+
 ## How it is put together
 
 ```
@@ -152,7 +169,8 @@ app/              dropin-app.exe: Tauri app, tray, named-pipe server, Tauri comm
   tauri.conf.json   window, CSP, installer and updater settings
 cli/              dropin.exe: no Tauri, so it starts in milliseconds
 git/              dropin-git crate: all git work, no Tauri, with its own tests
-  src/ops.rs        outgoing, reviewed push, worktree rebase, adopt, abandon
+  src/ops.rs        outgoing, reviewed push (holding commits back), worktree rebase, adopt, abandon
+  src/shelf.rs      shelving uncommitted work in the way while the branch moves
   src/branches.rs   switch, create, rename, delete (local and remote)
   src/changes.rs    status of the working tree, commit of ticked files, rollback
   src/parse.rs      parsing git's porcelain output

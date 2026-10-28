@@ -38,6 +38,11 @@ There is **no push command on purpose**: a push shares work (and often deploys i
 touched mid-rebase. Answers `status`: `up-to-date`, `rebased` (the branch moved), `refused` (with `error`), or
 `conflict`, with `worktree`, `files`, `onto`, `mine`, `incoming` and a `next` instruction.
 
+A `refused` answer with `inTheWay` means those files have uncommitted changes and the rebase changes them too.
+`dropin rebase --shelve` (and `dropin adopt --shelve`) puts them in git's stash for the moment the branch moves, then
+puts them back. Ask the person first: for that moment the files are gone from their checkout, and another session
+may be editing them. A shelf that clashes or can't go back stays in the stash; the window lists it with Unshelve.
+
 On `conflict` (from `dropin rebase`, from `push-review`, or handed over by the person):
 
 1. Work **in the worktree only** (it is detached at the branch's commit): `git -C <worktree> rebase <onto>`,

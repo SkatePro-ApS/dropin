@@ -143,7 +143,9 @@ pub fn close_diff_window(app: AppHandle) {
 pub async fn outgoing(app: AppHandle, name: String, fetch: bool) -> Result<Value, String> {
     let repo = repo_named(&app, &name)?;
     let path = repo.path.clone();
+    let shelf_path = repo.path.clone();
     let read = pipe::blocking(move || dropin_git::read_outgoing(Path::new(&path), fetch, None)).await;
+    let shelves = pipe::blocking(move || dropin_git::shelves(Path::new(&shelf_path))).await.unwrap_or_default();
     let kept = app.state::<Store>().of_repo(&name);
     let waiting = app.state::<Waiting>().who(&name);
     let o = match read {
@@ -151,7 +153,7 @@ pub async fn outgoing(app: AppHandle, name: String, fetch: bool) -> Result<Value
         // No upstream, a detached HEAD: the page shows why, and the kept conflicts still.
         Err(error) => {
             app.state::<Shown>().0.lock().unwrap().remove(&name);
-            return Ok(json!({ "repo": name, "path": repo.path, "error": error, "kept": kept, "waiting": waiting }));
+            return Ok(json!({ "repo": name, "path": repo.path, "error": error, "kept": kept, "waiting": waiting, "shelves": shelves }));
         }
     };
     app.state::<Shown>().0.lock().unwrap().insert(name.clone(), o.clone());
@@ -160,6 +162,7 @@ pub async fn outgoing(app: AppHandle, name: String, fetch: bool) -> Result<Value
     value["path"] = json!(repo.path);
     value["kept"] = json!(kept);
     value["waiting"] = json!(waiting);
+    value["shelves"] = json!(shelves);
     Ok(value)
 }
 
@@ -194,23 +197,30 @@ pub async fn diff(app: AppHandle, name: String, sha: String, file: dropin_git::F
 }
 
 /// Pushes the list the page drew, named by its head: when the page's head is not the one read
-/// last, the person has not seen the current list.
+/// last, the person has not seen the current list. `held` names the commits left out.
 #[tauri::command]
-pub async fn push(app: AppHandle, name: String, head: String) -> Result<Value, String> {
+pub async fn push(app: AppHandle, name: String, head: String, held: Option<Vec<String>>) -> Result<Value, String> {
     let repo = repo_named(&app, &name)?;
     let o = app.state::<Shown>().0.lock().unwrap().get(&name).cloned();
     let o = o.filter(|o| o.head == head).ok_or("The list changed since it was drawn; check it again before pushing.")?;
+    let held = held.unwrap_or_default();
     let _held = pipe::hold(&app, &repo, "push")?;
     let path = repo.path.clone();
-    let sent = o.clone();
-    let pushed = pipe::blocking(move || dropin_git::push(Path::new(&path), &sent)).await?;
+    let (sent, kept) = (o.clone(), held.clone());
+    let pushed = pipe::blocking(move || {
+        let dir = Path::new(&path);
+        dropin_git::push(dir, &sent, &kept, &dropin_git::worktree_base(dir))
+    })
+    .await?;
     if pushed.notice.tone == dropin_git::Tone::Success {
-        let subjects: Vec<&str> = o.commits.iter().map(|c| c.subject.as_str()).collect();
+        let subjects: Vec<&str> = o.commits.iter().filter(|c| !held.contains(&c.sha)).map(|c| c.subject.as_str()).collect();
+        let left: Vec<&str> = o.commits.iter().filter(|c| held.contains(&c.sha)).map(|c| c.subject.as_str()).collect();
         app.state::<Waiting>().answer(&name, &json!({
             "ok": true,
             "status": "pushed",
             "repo": name,
-            "head": o.head,
+            "head": pushed.sent,
+            "held": left,
             "upstream": o.upstream,
             "commits": subjects,
         }));
@@ -222,9 +232,9 @@ pub async fn push(app: AppHandle, name: String, head: String) -> Result<Value, S
 /// Rebases onto the upstream in a worktree, as `dropin rebase` does. A conflict ends a waiting
 /// `dropin push-review` with status `conflict`: the session that opened the window resolves it.
 #[tauri::command]
-pub async fn rebase(app: AppHandle, name: String) -> Result<Value, String> {
+pub async fn rebase(app: AppHandle, name: String, shelve: Option<bool>) -> Result<Value, String> {
     let repo = repo_named(&app, &name)?;
-    let value = pipe::rebase(&app, repo).await?;
+    let value = pipe::rebase(&app, repo, shelve.unwrap_or(false)).await?;
     if value["status"] == "conflict" {
         let mut handed = value.clone();
         handed["ok"] = json!(false);
@@ -237,9 +247,41 @@ pub async fn rebase(app: AppHandle, name: String) -> Result<Value, String> {
 
 /// Moves the branch onto a rebase finished in its kept worktree, as `dropin adopt` does.
 #[tauri::command]
-pub async fn adopt(app: AppHandle, name: String, worktree: String) -> Result<Value, String> {
+pub async fn adopt(app: AppHandle, name: String, worktree: String, shelve: Option<bool>) -> Result<Value, String> {
     let repo = repo_named(&app, &name)?;
-    pipe::adopt(&app, repo, Some(worktree)).await
+    pipe::adopt(&app, repo, Some(worktree), shelve.unwrap_or(false)).await
+}
+
+/// Puts a shelf left in the stash back.
+#[tauri::command]
+pub async fn unshelve(app: AppHandle, name: String, sha: String) -> Result<Value, String> {
+    let repo = repo_named(&app, &name)?;
+    let _held = pipe::hold(&app, &repo, "unshelve")?;
+    let back = pipe::blocking(move || Ok(dropin_git::unshelve(Path::new(&repo.path), &sha))).await?;
+    let _ = app.emit("repo-changed", &name);
+    Ok(match back {
+        dropin_git::Unshelved::Back => json!({ "tone": "success", "text": "Your shelved changes are back." }),
+        dropin_git::Unshelved::Clashed { files, .. } => json!({
+            "tone": "warning",
+            "text": format!("Your shelved changes are back, but clash in {}: resolve the conflict markers there, then drop the shelf.", dropin_git::plural(files.len(), "file")),
+            "detail": files.join("\n"),
+        }),
+        dropin_git::Unshelved::Kept { detail, .. } => json!({
+            "tone": "error",
+            "text": "git would not put the shelf back, so nothing changed: the files it holds have changed since.",
+            "detail": detail,
+        }),
+    })
+}
+
+/// Takes a shelf out of the stash for good; the notice says how to get it back meanwhile.
+#[tauri::command]
+pub async fn drop_shelf(app: AppHandle, name: String, sha: String) -> Result<Value, String> {
+    let repo = repo_named(&app, &name)?;
+    let gone = sha.clone();
+    pipe::blocking(move || dropin_git::drop_shelf(Path::new(&repo.path), &gone)).await?;
+    let _ = app.emit("repo-changed", &name);
+    Ok(json!({ "tone": "success", "text": "Dropped the shelf.", "detail": format!("To get it back: git stash apply {sha}") }))
 }
 
 /// Drops a kept conflict and its worktree, as `dropin abandon` does.

@@ -90,6 +90,8 @@ function view(name) {
       // Paths ticked for the next commit, and every path listed so far (a new one gets its default tick).
       ticked: new Set(),
       seen: new Set(),
+      // Commits to push the person holds back: the push leaves them out.
+      held: new Set(),
       draft: '',
       amend: false,
       // The message written before Amend put HEAD's in its place, back when Amend is unticked.
@@ -132,6 +134,7 @@ async function read(name, fetch = false) {
     if (fetch) readBranches(name);
     if (token !== v.token) return;
     v.data = data;
+    v.held = new Set((data.commits ?? []).filter(c => v.held.has(c.sha)).map(c => c.sha));
     v.readAt = Date.now();
     if (fetch && !data.fetchError && !data.error) v.fetchedAt = Date.now();
     // The upstream may have moved, so a search runs again.
@@ -398,7 +401,25 @@ async function switchTo(name, fetch = false) {
 
 function canPush(v) {
   const d = v.data;
-  return Boolean(d && !d.error && d.ahead > 0 && d.behind === 0 && !v.busy && !d.kept?.length);
+  return Boolean(d && !d.error && d.ahead > heldCommits(v).length && d.behind === 0 && !v.busy && !d.kept?.length);
+}
+
+/** The listed commits the person holds back, newest first. */
+function heldCommits(v) {
+  return (v.data?.commits ?? []).filter(c => v.held.has(c.sha));
+}
+
+/** Holding back older commits than some pushed ones means reordering: the held ones move on top. */
+function reorders(v) {
+  const commits = v.data?.commits ?? [];
+  const n = heldCommits(v).length;
+  return commits.slice(0, n).some(c => !v.held.has(c.sha));
+}
+
+function toggleHeld(v, sha) {
+  if (!v.held.delete(sha)) v.held.add(sha);
+  renderList();
+  renderFooter();
 }
 
 async function push() {
@@ -410,9 +431,11 @@ async function push() {
   renderAll();
   let refetch = false;
   try {
-    const pushed = await api.invoke('push', { name, head: v.data.head });
+    const held = heldCommits(v).map(c => c.sha);
+    const pushed = await api.invoke('push', { name, head: v.data.head, held });
     v.notice = pushed.notice;
     refetch = pushed.refetch;
+    if (pushed.notice.tone === 'success') v.held.clear();
   } catch (error) {
     v.notice = { tone: 'error', text: String(error) };
   }
@@ -420,7 +443,8 @@ async function push() {
   await read(name, refetch);
 }
 
-async function rebase() {
+/** Rebases onto the upstream; `shelve` shelves uncommitted work in the incoming files meanwhile. */
+async function rebase(shelve = false) {
   const name = current;
   const v = view(name);
   if (v.busy) return;
@@ -428,8 +452,10 @@ async function rebase() {
   v.notice = null;
   renderAll();
   try {
-    const r = await api.invoke('rebase', { name });
-    if (r.status === 'up-to-date') {
+    const r = await api.invoke('rebase', { name, shelve });
+    if (r.inTheWay?.length) {
+      v.notice = { ...r.notice, actions: [{ label: 'Shelve and rebase', strong: true, run: () => rebase(true) }] };
+    } else if (r.status === 'up-to-date') {
       v.notice = { tone: 'success', text: `${r.branch} already has everything on ${r.upstream}.` };
     } else if (r.status === 'conflict') {
       // A waiting review is answered with the conflict, so the session that opened the window resolves it.
@@ -452,15 +478,17 @@ async function rebase() {
   await read(name, false);
 }
 
-async function adopt(kept) {
+async function adopt(kept, shelve = false) {
   const name = current;
   const v = view(name);
   if (v.busy) return;
   v.busy = 'adopt';
   renderAll();
   try {
-    const r = await api.invoke('adopt', { name, worktree: kept.worktree });
-    v.notice = r.notice;
+    const r = await api.invoke('adopt', { name, worktree: kept.worktree, shelve });
+    v.notice = r.inTheWay?.length
+      ? { ...r.notice, actions: [{ label: 'Shelve and adopt', strong: true, run: () => adopt(kept, true) }] }
+      : r.notice;
   } catch (error) {
     v.notice = { tone: 'error', text: String(error) };
   }
@@ -482,6 +510,33 @@ async function abandon(kept) {
   }
   v.busy = null;
   await read(name, false);
+}
+
+/** Puts a shelf left in the stash back. */
+async function unshelve(shelf) {
+  const name = current;
+  const v = view(name);
+  if (v.busy) return;
+  v.busy = 'unshelve';
+  renderAll();
+  try {
+    v.notice = await api.invoke('unshelve', { name, sha: shelf.sha });
+  } catch (error) {
+    v.notice = { tone: 'error', text: String(error) };
+  }
+  v.busy = null;
+  await read(name, false);
+}
+
+function dropShelf(shelf) {
+  ask({
+    title: 'Drop the shelf?',
+    text: `Its changes in ${plural(shelf.files.length, 'file')} leave git's stash. Until git cleans up, git stash apply ${shelf.sha.slice(0, 10)} still brings them back.`,
+    detail: shelf.files.join('\n'),
+    ok: 'Drop',
+    danger: true,
+    run: () => api.invoke('drop_shelf', { name: current, sha: shelf.sha }).catch(error => ({ tone: 'error', text: String(error) })),
+  });
 }
 
 /** The instruction Claude needs to finish a kept rebase, copied for pasting into a session. */
@@ -754,13 +809,25 @@ function renderAlerts() {
       { label: v.busy === 'adopt' ? 'Adopting…' : 'Adopt', strong: true, run: () => adopt(k) },
     ]));
   }
+  for (const s of d.shelves ?? []) {
+    const text = el('div', 'text');
+    text.append(
+      `Changes shelved ${s.why} wait in git's stash (${s.name}, shelved ${ago(s.at)}): `,
+      el('code', '', s.files.join(', ')),
+      '.',
+    );
+    box.append(alert('warning', '⤓', text, [
+      { label: 'Drop…', run: () => dropShelf(s) },
+      { label: v.busy === 'unshelve' ? 'Unshelving…' : 'Unshelve', strong: true, run: () => unshelve(s) },
+    ]));
+  }
   if (d.waiting === 'claude') {
     box.append(alert('info', 'C', 'Claude is waiting on this review. Push answers it; Cancel tells it you did not push.'));
   }
   if (d.behind > 0 && !kept.length) {
     const text = `${d.upstream} has ${plural(d.behind, 'commit')} this branch lacks (marked • below). Rebase onto ${d.upstream} before pushing.`;
     box.append(alert('warning', '↓', text, [
-      { label: v.busy === 'rebase' ? 'Rebasing…' : 'Rebase', strong: true, run: rebase },
+      { label: v.busy === 'rebase' ? 'Rebasing…' : 'Rebase', strong: true, run: () => rebase() },
     ]));
   }
   if (d.fetchError) {
@@ -778,7 +845,7 @@ function renderAlerts() {
 /** A notice's alert row with a close button. */
 function dismissable(notice, dismiss) {
   const badge = notice.tone === 'success' ? '✓' : '!';
-  const row = alert(notice.tone, badge, notice.text, [], notice.detail);
+  const row = alert(notice.tone, badge, notice.text, notice.actions ?? [], notice.detail);
   const close = el('button', 'icon-button dismiss');
   close.title = 'Dismiss';
   close.innerHTML = '<svg class="icon" viewBox="0 0 16 16"><path d="M4 4l8 8 M12 4l-8 8" /></svg>';
@@ -893,6 +960,22 @@ function commitRow(v, c, kind, words = []) {
   row.dataset.sha = c.sha;
   row.title = `${c.short} · ${c.author} · ${c.date}`;
   if (kind.includes('incoming')) row.append(el('span', 'dot'));
+  if (kind === 'outgoing' && !v.data?.preview) {
+    const held = v.held.has(c.sha);
+    if (held) row.classList.add('held');
+    const box = el('input', 'tick');
+    box.type = 'checkbox';
+    box.tabIndex = -1;
+    box.checked = !held;
+    box.title = held ? 'Held back: include it in the push (Space)' : 'Hold it back from the push (Space)';
+    box.setAttribute('aria-label', box.title);
+    box.onmousedown = event => event.preventDefault();
+    box.onclick = event => {
+      event.stopPropagation();
+      toggleHeld(v, c.sha);
+    };
+    row.append(box);
+  }
   row.append(markedSpan('subject', c.subject, words), markedSpan('author', c.author, words), el('span', 'age', age(c.at)));
   if (c.sha === v.sel) {
     row.classList.add('selected');
@@ -1587,12 +1670,19 @@ function renderFooter() {
     button.innerHTML = '<span class="spinner"></span>Pushing…';
     return;
   }
-  button.textContent = d && d.ahead > 0 ? `Push ${plural(d.ahead, 'commit')}` : 'Push';
+  const held = v ? heldCommits(v).length : 0;
+  button.textContent = !(d?.ahead > 0) ? 'Push' : held ? `Push ${d.ahead - held} of ${d.ahead}` : `Push ${plural(d.ahead, 'commit')}`;
   if (!d || d.error) return;
   if (d.kept?.length) {
     note.textContent = 'Finish or abandon the kept rebase first.';
   } else if (d.behind > 0) {
     note.textContent = `Rebase onto ${d.upstream} first.`;
+  } else if (held && held === d.ahead) {
+    note.textContent = 'Every commit is held back. Tick one to push it.';
+  } else if (held) {
+    note.textContent = reorders(v)
+      ? `Holds back ${plural(held, 'commit')}: ${held === 1 ? 'it moves' : 'they move'} on top of the pushed ones first, with new shas.`
+      : (held === 1 ? 'Holds back the newest commit; it stays as it is.' : `Holds back the newest ${held} commits; they stay as they are.`);
   } else if (d.ahead > 0) {
     note.append('Sends ', el('span', 'mono', d.head.slice(0, 10)), ` to ${d.upstream}, and nothing newer.`);
   } else {
@@ -2413,6 +2503,12 @@ function onKey(event) {
   if (!inTree && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
     event.preventDefault();
     moveCommit(event.key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  const v = view(current);
+  if (event.key === ' ' && document.activeElement === $('list') && v.data?.commits?.some(c => c.sha === v.sel) && !v.data.preview) {
+    event.preventDefault();
+    toggleHeld(v, v.sel);
   }
 }
 

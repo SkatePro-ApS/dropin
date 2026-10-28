@@ -116,8 +116,11 @@ async fn dispatch(app: &AppHandle, request: &Value) -> Result<Value, String> {
             outgoing(resolve(app, request)?, request["fetch"] == json!(true), preview).await
         }
         "push-review" => crate::dialog::push_review(app, resolve(app, request)?, request["by-person"] == json!(true)).await,
-        "rebase" => rebase(app, resolve(app, request)?).await,
-        "adopt" => adopt(app, resolve(app, request)?, request["worktree"].as_str().map(String::from)).await,
+        "rebase" => rebase(app, resolve(app, request)?, request["shelve"] == json!(true)).await,
+        "adopt" => {
+            let worktree = request["worktree"].as_str().map(String::from);
+            adopt(app, resolve(app, request)?, worktree, request["shelve"] == json!(true)).await
+        }
         "abandon" => abandon(app, resolve(app, request)?, request["worktree"].as_str().map(String::from)).await,
         "pending" => {
             let repo = resolve(app, request)?;
@@ -260,7 +263,8 @@ async fn outgoing(repo: Repo, fetch: bool, preview: Option<String>) -> Result<Va
 
 /// `dropin rebase`: fetches, then rebases the branch onto its upstream in a worktree. A conflict
 /// keeps that worktree for Claude to finish; `dropin adopt` then moves the branch onto the result.
-pub async fn rebase(app: &AppHandle, repo: Repo) -> Result<Value, String> {
+/// `--shelve` shelves uncommitted work in the incoming files while the branch moves, then puts it back.
+pub async fn rebase(app: &AppHandle, repo: Repo, shelve: bool) -> Result<Value, String> {
     let _held = hold(app, &repo, "rebase")?;
     // A new rebase would reuse the kept conflict's worktree name and take that work away.
     if let Some(kept) = app.state::<Store>().of_repo(&repo.name).first() {
@@ -276,7 +280,7 @@ pub async fn rebase(app: &AppHandle, repo: Repo) -> Result<Value, String> {
         if o.behind == 0 {
             return Ok((o, None));
         }
-        let rebased = dropin_git::rebase_onto(dir, &o, &dropin_git::worktree_base(dir))?;
+        let rebased = dropin_git::rebase_onto(dir, &o, &dropin_git::worktree_base(dir), shelve)?;
         Ok((o, Some(rebased)))
     })
     .await?;
@@ -308,18 +312,20 @@ pub async fn rebase(app: &AppHandle, repo: Repo) -> Result<Value, String> {
         "status": if failed { "refused" } else { "rebased" },
         "error": if failed { Some(&notice.text) } else { None },
         "notice": notice,
+        "inTheWay": rebased.in_the_way,
     }))
 }
 
 /// `dropin adopt [--worktree <path>]`: checks a finished rebase in a kept worktree and moves the
 /// branch onto it. A refusal keeps the worktree, so the work can be fixed and adopted again.
-pub async fn adopt(app: &AppHandle, repo: Repo, worktree: Option<String>) -> Result<Value, String> {
+/// `--shelve` shelves uncommitted work in the files it changes while the branch moves.
+pub async fn adopt(app: &AppHandle, repo: Repo, worktree: Option<String>, shelve: bool) -> Result<Value, String> {
     let pending = app.state::<Store>().find(&repo.name, worktree.as_deref())?;
     let _held = hold(app, &repo, "adopt")?;
     let (path, c) = (repo.path.clone(), pending.conflict.clone());
     let adopted = blocking(move || {
         let dir = Path::new(&path);
-        let adopted = dropin_git::adopt(dir, &c)?;
+        let adopted = dropin_git::adopt(dir, &c, shelve)?;
         if adopted.to.is_some() {
             dropin_git::remove_worktree(dir, &c.worktree);
         }

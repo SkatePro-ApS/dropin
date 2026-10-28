@@ -217,11 +217,11 @@ fn push_sends_the_reviewed_head_only() {
     let o = read_outgoing(&r.a, false, None).unwrap();
 
     commit(&r.a, "a2.txt", "x", "A two, not reviewed");
-    let moved = push(&r.a, &o).unwrap();
+    let moved = push(&r.a, &o, &[], &r.root.join("wt")).unwrap();
     assert_eq!(moved.notice.tone, Tone::Warning);
     sh(&r.a, &["reset", "-q", "--hard", "HEAD~1"]);
 
-    let pushed = push(&r.a, &o).unwrap();
+    let pushed = push(&r.a, &o, &[], &r.root.join("wt")).unwrap();
     assert_eq!(pushed.notice.tone, Tone::Success, "{:?}", pushed.notice);
     assert_eq!(sh(&r.root.join("origin.git"), &["rev-parse", "main"]).trim(), o.head);
 }
@@ -234,7 +234,7 @@ fn push_refused_by_a_moved_upstream_asks_for_a_refetch() {
     commit(&r.a, "a1.txt", "x", "A one");
     // Read without a fetch: the list thinks the push can go.
     let o = read_outgoing(&r.a, false, None).unwrap();
-    let pushed = push(&r.a, &o).unwrap();
+    let pushed = push(&r.a, &o, &[], &r.root.join("wt")).unwrap();
     assert_eq!(pushed.notice.tone, Tone::Warning, "{:?}", pushed.notice);
     assert!(pushed.refetch);
 }
@@ -251,7 +251,7 @@ fn rebase_moves_the_branch_and_keeps_staged_work_staged() {
     write(&r.a, "a1.txt", "edited, not staged");
 
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let rebased = rebase_onto(&r.a, &o, &base).unwrap();
+    let rebased = rebase_onto(&r.a, &o, &base, false).unwrap();
     let notice = rebased.notice.unwrap();
     assert_eq!(notice.tone, Tone::Success, "{notice:?}");
     assert!(rebased.conflict.is_none());
@@ -269,7 +269,7 @@ fn rebase_with_nothing_of_its_own_just_moves() {
     commit(&r.b, "b1.txt", "x", "B one");
     sh(&r.b, &["push", "-q"]);
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let notice = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap().notice.unwrap();
+    let notice = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap().notice.unwrap();
     assert_eq!(notice.tone, Tone::Success, "{notice:?}");
     assert_eq!(head(&r.a), head(&r.b));
 }
@@ -284,7 +284,7 @@ fn rebase_stops_when_an_incoming_file_has_local_changes() {
     let before = head(&r.a);
 
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let notice = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap().notice.unwrap();
+    let notice = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap().notice.unwrap();
     assert_eq!(notice.tone, Tone::Error);
     assert_eq!(notice.detail, "shared.txt");
     assert_eq!(head(&r.a), before);
@@ -304,7 +304,7 @@ fn rebase_runs_when_the_incoming_file_already_matches_head() {
     write(&r.a, "shared.txt", "one\nTWO\nthree\nlocal edit\n");
 
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let notice = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap().notice.unwrap();
+    let notice = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap().notice.unwrap();
     assert_ne!(notice.tone, Tone::Error, "{notice:?}");
     let o = read_outgoing(&r.a, false, None).unwrap();
     assert_eq!((subjects(&o), o.behind), (vec!["A one"], 0));
@@ -323,7 +323,7 @@ fn conflict_is_kept_then_adopted() {
     let from = head(&r.a);
 
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let rebased = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap();
+    let rebased = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap();
     let c = rebased.conflict.expect("a conflict");
     assert_eq!(c.files, ["shared.txt"]);
     assert_eq!((c.from.as_str(), c.branch.as_str()), (from.as_str(), "main"));
@@ -332,7 +332,7 @@ fn conflict_is_kept_then_adopted() {
     assert_eq!(head(&r.a), from, "the branch is untouched");
 
     // Not done yet: adopt refuses and keeps the worktree.
-    assert_eq!(adopt(&r.a, &c).unwrap().notice.tone, Tone::Error);
+    assert_eq!(adopt(&r.a, &c, false).unwrap().notice.tone, Tone::Error);
 
     // Resolve the way Claude would.
     let ran = git(&wt, &["rebase", &c.onto]).unwrap();
@@ -341,7 +341,7 @@ fn conflict_is_kept_then_adopted() {
     sh(&wt, &["add", "shared.txt"]);
     sh(&wt, &["-c", "core.editor=true", "rebase", "--continue"]);
 
-    let adopted = adopt(&r.a, &c).unwrap();
+    let adopted = adopt(&r.a, &c, false).unwrap();
     assert_eq!(adopted.notice.tone, Tone::Success, "{:?}", adopted.notice);
     assert_eq!(adopted.to.as_deref(), Some(head(&r.a).as_str()));
     assert!(adopted.dropped.is_empty());
@@ -362,7 +362,7 @@ fn adopt_refuses_conflict_markers_and_reports_dropped_commits() {
     commit(&r.a, "a2.txt", "x", "A two");
 
     let o = read_outgoing(&r.a, true, None).unwrap();
-    let c = rebase_onto(&r.a, &o, &r.root.join("wt")).unwrap().conflict.unwrap();
+    let c = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap().conflict.unwrap();
     let wt = PathBuf::from(&c.worktree);
 
     // Markers committed as they stood.
@@ -370,7 +370,7 @@ fn adopt_refuses_conflict_markers_and_reports_dropped_commits() {
     sh(&wt, &["add", "shared.txt"]);
     sh(&wt, &["-c", "core.editor=true", "rebase", "--continue"]);
     let before = head(&r.a);
-    let adopted = adopt(&r.a, &c).unwrap();
+    let adopted = adopt(&r.a, &c, false).unwrap();
     assert_eq!(adopted.notice.tone, Tone::Error);
     assert_eq!(adopted.notice.detail, format!("{}:shared.txt", head(&wt)));
     assert_eq!(head(&r.a), before);
@@ -379,10 +379,151 @@ fn adopt_refuses_conflict_markers_and_reports_dropped_commits() {
     sh(&wt, &["checkout", "-q", "--detach", &c.from]);
     assert!(!git(&wt, &["rebase", &c.onto]).unwrap().ok());
     sh(&wt, &["rebase", "--skip"]);
-    let adopted = adopt(&r.a, &c).unwrap();
+    let adopted = adopt(&r.a, &c, false).unwrap();
     assert_eq!(adopted.notice.tone, Tone::Warning, "{:?}", adopted.notice);
     assert_eq!(adopted.dropped, ["A edits shared"]);
     remove_worktree(&r.a, &c.worktree);
+}
+
+
+// ---- shelves ----
+
+/// The person edits a line the upstream leaves alone, in a file it changes: the rebase is refused
+/// with the file named, then goes ahead shelved, and the edit is back on top of the upstream's.
+#[test]
+fn rebase_shelves_work_in_an_incoming_file_and_puts_it_back() {
+    let r = repos();
+    commit(&r.b, "shared.txt", "ONE\ntwo\nthree\n", "B edits shared");
+    sh(&r.b, &["push", "-q"]);
+    commit(&r.a, "a1.txt", "x", "A one");
+    write(&r.a, "shared.txt", "one\ntwo\nthree, edited\n");
+    sh(&r.a, &["add", "shared.txt"]);
+    write(&r.a, "other.txt", "left alone");
+    let base = r.root.join("wt");
+
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let refused = rebase_onto(&r.a, &o, &base, false).unwrap();
+    assert_eq!(refused.in_the_way, ["shared.txt"]);
+    assert_eq!(refused.notice.unwrap().tone, Tone::Error);
+
+    let rebased = rebase_onto(&r.a, &o, &base, true).unwrap();
+    let notice = rebased.notice.unwrap();
+    assert_eq!(notice.tone, Tone::Success, "{notice:?}");
+    assert!(notice.text.contains("shelved changes are back"), "{}", notice.text);
+    assert_eq!(std::fs::read_to_string(r.a.join("shared.txt")).unwrap(), "ONE\ntwo\nthree, edited\n");
+    assert_eq!(sh(&r.a, &["diff", "--cached", "--name-only"]).trim(), "shared.txt", "staged stays staged");
+    assert_eq!(std::fs::read_to_string(r.a.join("other.txt")).unwrap(), "left alone");
+    assert!(shelves(&r.a).unwrap().is_empty());
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    assert_eq!((o.ahead, o.behind), (1, 0));
+}
+
+/// The person's edit is on the line the upstream changes: the branch moves, the edit comes back
+/// with conflict markers, and the shelf stays listed until it is dropped.
+#[test]
+fn a_shelf_that_clashes_stays_listed() {
+    let r = repos();
+    commit(&r.b, "shared.txt", "one\nB\nthree\n", "B edits shared");
+    sh(&r.b, &["push", "-q"]);
+    write(&r.a, "shared.txt", "one\nA\nthree\n");
+
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let notice = rebase_onto(&r.a, &o, &r.root.join("wt"), true).unwrap().notice.unwrap();
+    assert_eq!(notice.tone, Tone::Warning, "{notice:?}");
+    assert_eq!(notice.detail, "shared.txt");
+    assert_eq!(head(&r.a), head(&r.b));
+    assert!(std::fs::read_to_string(r.a.join("shared.txt")).unwrap().contains("<<<<<<<"));
+
+    let kept = shelves(&r.a).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!((kept[0].files.clone(), kept[0].why.as_str()), (vec!["shared.txt".to_string()], "for rebase onto origin/main"));
+    drop_shelf(&r.a, &kept[0].sha).unwrap();
+    assert!(shelves(&r.a).unwrap().is_empty());
+}
+
+#[test]
+fn adopt_shelves_work_in_the_way() {
+    let r = repos();
+    commit(&r.b, "shared.txt", "one\nB\nthree\n", "B edits shared");
+    sh(&r.b, &["push", "-q"]);
+    commit(&r.a, "shared.txt", "one\nA\nthree\n", "A edits shared");
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let c = rebase_onto(&r.a, &o, &r.root.join("wt"), false).unwrap().conflict.unwrap();
+    let wt = PathBuf::from(&c.worktree);
+    assert!(!git(&wt, &["rebase", &c.onto]).unwrap().ok());
+    write(&wt, "shared.txt", "one\nA and B\nthree\n");
+    sh(&wt, &["add", "shared.txt"]);
+    sh(&wt, &["-c", "core.editor=true", "rebase", "--continue"]);
+    write(&r.a, "shared.txt", "one\nA\nthree\nfour\n");
+    let before = head(&r.a);
+
+    let refused = adopt(&r.a, &c, false).unwrap();
+    assert_eq!((refused.in_the_way.clone(), refused.to.is_none()), (vec!["shared.txt".to_string()], true));
+    assert_eq!(head(&r.a), before);
+
+    let adopted = adopt(&r.a, &c, true).unwrap();
+    assert_eq!(adopted.notice.tone, Tone::Success, "{:?}", adopted.notice);
+    assert_eq!(std::fs::read_to_string(r.a.join("shared.txt")).unwrap(), "one\nA and B\nthree\nfour\n");
+    remove_worktree(&r.a, &c.worktree);
+}
+
+// ---- holding commits back ----
+
+fn origin_main(r: &Repos) -> String {
+    sh(&r.root.join("origin.git"), &["rev-parse", "main"]).trim().to_string()
+}
+
+#[test]
+fn push_holds_back_the_newest_commits_as_they_are() {
+    let r = repos();
+    commit(&r.a, "a1.txt", "x", "A one");
+    commit(&r.a, "a2.txt", "x", "A two");
+    commit(&r.a, "a3.txt", "x", "A three");
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    let held = vec![o.commits[0].sha.clone()];
+
+    let pushed = push(&r.a, &o, &held, &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Success, "{:?}", pushed.notice);
+    assert_eq!(origin_main(&r), o.commits[1].sha);
+    assert_eq!(head(&r.a), o.head, "nothing was rewritten");
+}
+
+#[test]
+fn push_reorders_to_hold_back_an_older_commit() {
+    let r = repos();
+    commit(&r.a, "a1.txt", "x", "A one");
+    commit(&r.a, "a2.txt", "x", "A two");
+    commit(&r.a, "a3.txt", "x", "A three");
+    write(&r.a, "a1.txt", "uncommitted");
+    let tree = sh(&r.a, &["rev-parse", "HEAD^{tree}"]);
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    let held = vec![o.commits[2].sha.clone()];
+
+    let pushed = push(&r.a, &o, &held, &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Success, "{:?}", pushed.notice);
+    let sent = sh(&r.a, &["log", "--format=%s", "origin/main~2..origin/main"]);
+    assert_eq!(sent.lines().collect::<Vec<_>>(), ["A three", "A two"]);
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    assert_eq!((subjects(&o), o.behind), (vec!["A one"], 0));
+    assert_eq!(sh(&r.a, &["rev-parse", "HEAD^{tree}"]), tree);
+    assert_eq!(std::fs::read_to_string(r.a.join("a1.txt")).unwrap(), "uncommitted");
+    assert!(sh(&r.a, &["worktree", "list"]).lines().count() == 1, "the worktree is gone");
+}
+
+#[test]
+fn push_refuses_to_hold_back_a_commit_the_others_need() {
+    let r = repos();
+    commit(&r.a, "shared.txt", "one\nA\nthree\n", "A first");
+    commit(&r.a, "shared.txt", "one\nA again\nthree\n", "A second");
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    let before = origin_main(&r);
+
+    let pushed = push(&r.a, &o, &[o.commits[1].sha.clone()], &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Error, "{:?}", pushed.notice);
+    assert_eq!(pushed.notice.detail, "shared.txt");
+    assert_eq!((head(&r.a), origin_main(&r)), (o.head.clone(), before));
+    let all: Vec<String> = o.commits.iter().map(|c| c.sha.clone()).collect();
+    assert_eq!(push(&r.a, &o, &all, &r.root.join("wt")).unwrap().notice.tone, Tone::Error);
 }
 
 #[test]

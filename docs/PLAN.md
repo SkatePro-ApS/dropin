@@ -104,3 +104,15 @@ the conflict to a Claude session; with nobody waiting, the alert offers **Copy f
     From/To dates (added the same day) bound the author time, the one the list's Age shows: the page sends
     local midnights (the To day included) and Rust filters, since git's --since/--until read the committer time.
     The Subject / Author / Age header moved into the list, over the upstream's commits only, sticky as they scroll.
+14. ✅ Shelves and held commits (requested 2026-10-28). **Shelve:** a rebase refused for uncommitted work in an
+    incoming file answers `inTheWay`, and the alert offers Shelve and rebase (`--shelve`, also on adopt). Only the files
+    the move changes go to git's stash (`stash push -u -- <files>`, message `dropin: shelved for …`), and only for the
+    moment `move_branch` runs, not the whole rebase: other sessions edit the checkout, and the rebase itself happens in
+    its worktree. They come back with `apply --index`; when the upstream changed those files the index can't be put
+    back, so a plain apply follows and a file staged whole is staged again. A clash leaves markers and keeps the shelf;
+    `shelves` lists Drop In's stashes for an Unshelve / Drop alert. Nothing is ever shelved unasked.
+    **Hold back:** each commit to push has a tick. Held commits that are the newest push the commit below them, with
+    no rewrite. Otherwise the branch is reordered in a worktree (cherry-pick the pushed commits onto the upstream, then
+    the held ones), refused if a pick conflicts, holds a merge, or the end tree differs; the branch moves (same tree, so
+    no file changes) and the commit below the held ones is pushed. Moving before pushing means a failed move pushes
+    nothing. A list over 200 commits can't hold back.

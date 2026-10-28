@@ -19,8 +19,10 @@ usage: dropin <command> [args] [--repo <name>] [--pretty]
   status             branch, upstream, ahead/behind, changed files
   outgoing           commits a push would send, and the ones it lacks [--fetch] [--preview <ref>]
   rebase             fetch, then rebase onto the upstream in a separate worktree; a conflict
-                     answers status \"conflict\" with the worktree to finish it in
+                     answers status \"conflict\" with the worktree to finish it in; a refusal
+                     for uncommitted work in the way lists it as inTheWay [--shelve]
   adopt              move the branch onto a rebase finished in its worktree [--worktree <path>]
+                     [--shelve]
   abandon            drop a kept conflict and its worktree [--worktree <path>]
   pending            the repo's kept conflicts
   show               show the window (on the repo, when one is known)

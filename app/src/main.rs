@@ -61,6 +61,8 @@ fn main() {
             dialog::rebase,
             dialog::adopt,
             dialog::abandon,
+            dialog::unshelve,
+            dialog::drop_shelf,
             dialog::cancel,
             dialog::diff_window,
             dialog::close_diff_window,

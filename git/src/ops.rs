@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::parse::*;
 use crate::run::*;
+use crate::shelf::*;
 
 /// The push dialog lists at most this many commits each way.
 const LIST_LIMIT: usize = 200;
@@ -98,6 +99,9 @@ pub struct Rebased {
     pub notice: Option<Notice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Conflict>,
+    /// Refused for uncommitted work in these files: shelving them lets it go ahead.
+    #[serde(rename = "inTheWay", skip_serializing_if = "Vec::is_empty")]
+    pub in_the_way: Vec<String>,
 }
 
 /// How `adopt` ended; `to` is set once the branch moved.
@@ -108,6 +112,9 @@ pub struct Adopted {
     pub to: Option<String>,
     /// Subjects of the branch's commits the result lacks.
     pub dropped: Vec<String>,
+    /// Refused for uncommitted work in these files: shelving them lets it go ahead.
+    #[serde(rename = "inTheWay", skip_serializing_if = "Vec::is_empty")]
+    pub in_the_way: Vec<String>,
 }
 
 /// How `push` ended; `refetch` when the upstream turned out to have moved.
@@ -115,6 +122,9 @@ pub struct Adopted {
 pub struct Pushed {
     pub notice: Notice,
     pub refetch: bool,
+    /// The commit pushed, once a push went through.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sent: String,
 }
 
 /// Why `move_branch` left the branch alone.
@@ -321,10 +331,13 @@ pub fn diff_of(dir: &Path, sha: &str, file: &FileChange) -> Result<(String, bool
     Ok((ran.must("git show")?, truncated))
 }
 
-/// Pushes the reviewed head, and only it, to the upstream branch. Refuses when HEAD moved
-/// since `o` was read: whatever came since has not been reviewed.
-pub fn push(dir: &Path, o: &Outgoing) -> Result<Pushed, String> {
-    let refuse = |text: &str| Ok(Pushed { notice: Notice::error(text, ""), refetch: false });
+/// Pushes the reviewed commits, leaving out `held` (shas from `o.commits`). Refuses when HEAD
+/// moved since `o` was read: whatever came since has not been reviewed. Held commits that are
+/// all newer than the rest stay as they are and the push stops below them; otherwise the branch
+/// is first reordered in a worktree under `base`, the pushed commits first and the held ones on
+/// top, and moved there. The working files never change: the reordered branch has the same tree.
+pub fn push(dir: &Path, o: &Outgoing, held: &[String], base: &Path) -> Result<Pushed, String> {
+    let refuse = |text: &str| Ok(Pushed { notice: Notice::error(text, ""), refetch: false, sent: String::new() });
     if o.preview.is_some() {
         return refuse("A preview list cannot be pushed.");
     }
@@ -343,21 +356,112 @@ pub fn push(dir: &Path, o: &Outgoing) -> Result<Pushed, String> {
                 "",
             ),
             refetch: false,
+            sent: String::new(),
         });
     }
-    let target = format!("{}:refs/heads/{}", o.head, o.remote_branch);
+    if held.is_empty() {
+        return push_sha(dir, o, &o.head, o.ahead, "");
+    }
+    if o.commits.len() < o.ahead {
+        return refuse(&format!("Only the newest {LIST_LIMIT} commits are listed, so commits cannot be held back here."));
+    }
+    if held.iter().any(|sha| !o.commits.iter().any(|c| &c.sha == sha)) {
+        return refuse("A held commit is not in the list any more. Check the new list, then push again.");
+    }
+    // Oldest first, the way they are applied.
+    let (send, keep): (Vec<&Commit>, Vec<&Commit>) = o.commits.iter().rev().partition(|c| !held.contains(&c.sha));
+    if send.is_empty() {
+        return refuse("Every commit is held back, so there is nothing to push.");
+    }
+    let held_note = format!(" {} held back.", plural(keep.len(), "commit"));
+    let oldest_held = o.commits.iter().rev().position(|c| held.contains(&c.sha)).unwrap_or(o.commits.len());
+    if oldest_held == send.len() {
+        // The held commits are the newest ones: push the commit below them.
+        return push_sha(dir, o, &send[send.len() - 1].sha, send.len(), &held_note);
+    }
+
+    let merges = trimmed(dir, &["rev-list", "--merges", "--count", &format!("{}..{}", o.upstream, o.head)], "git rev-list")?;
+    if merges != "0" {
+        return refuse("The commits to push hold a merge, so they cannot be reordered to hold some back. Push them all, or none.");
+    }
+    let onto = trimmed(dir, &["rev-parse", &format!("{}^{{commit}}", o.upstream)], "git rev-parse")?;
+    std::fs::create_dir_all(base).map_err(|e| format!("cannot make {}: {e}", base.display()))?;
+    let worktree = slash(&base.join(format!("push-reorder-{}", short(&o.head))));
+    remove_worktree(dir, &worktree);
+    let added = git_with(dir, &["worktree", "add", "--detach", &worktree, &onto], WORKTREE, None)?;
+    if !added.ok() {
+        return refuse("A separate checkout for reordering could not be made, so nothing was pushed.");
+    }
+    let wt = Path::new(&worktree);
+    let reordered: Result<Result<(String, String), Notice>, String> = (|| {
+        let pick = |list: &[&Commit]| -> Result<Option<Notice>, String> {
+            let mut args = vec!["-c", "core.editor=true", "cherry-pick", "--allow-empty"];
+            args.extend(list.iter().map(|c| c.sha.as_str()));
+            let ran = git_with(wt, &args, REBASE, None)?;
+            if ran.ok() {
+                return Ok(None);
+            }
+            let files = git(wt, &["diff", "--name-only", "--diff-filter=U", "-z"])
+                .ok()
+                .filter(Ran::ok)
+                .map(|r| split_z(&r.stdout))
+                .unwrap_or_default();
+            let _ = git(wt, &["cherry-pick", "--abort"]);
+            let text = if files.is_empty() {
+                "Reordering the commits failed, so nothing was pushed and the branch was not touched.".to_string()
+            } else {
+                format!(
+                    "The commits to push need the held ones under them (they change the same lines in {}), so nothing was pushed and the branch was not touched.",
+                    plural(files.len(), "file")
+                )
+            };
+            let said = if files.is_empty() { tail(&format!("{}\n{}", ran.stderr, ran.stdout), 4) } else { files.join("\n") };
+            Ok(Some(Notice::error(text, said)))
+        };
+        if let Some(n) = pick(&send)? {
+            return Ok(Err(n));
+        }
+        let mid = trimmed(wt, &["rev-parse", "HEAD"], "git rev-parse")?;
+        if let Some(n) = pick(&keep)? {
+            return Ok(Err(n));
+        }
+        let to = trimmed(wt, &["rev-parse", "HEAD"], "git rev-parse")?;
+        let tree = |sha: &str| trimmed(dir, &["rev-parse", &format!("{sha}^{{tree}}")], "git rev-parse");
+        if tree(&to)? != tree(&o.head)? {
+            return Ok(Err(Notice::error(
+                "Reordered, the commits add up to different files, so nothing was pushed and the branch was not touched.",
+                "",
+            )));
+        }
+        Ok(Ok((mid, to)))
+    })();
+    remove_worktree(dir, &worktree);
+    let (mid, to) = match reordered? {
+        Ok(found) => found,
+        Err(notice) => return Ok(Pushed { notice, refetch: false, sent: String::new() }),
+    };
+    if let Err(unmoved) = move_branch(dir, &o.branch, &o.head, &to, "dropin: hold commits back from a push") {
+        return Ok(Pushed { notice: unmoved_notice(&o.branch, unmoved, "the commits were reordered"), refetch: false, sent: String::new() });
+    }
+    let note = format!("{held_note} {} now sits on top of the pushed ones, with new shas.", if keep.len() == 1 { "It" } else { "They" });
+    push_sha(dir, o, &mid, send.len(), &note)
+}
+
+/// Pushes `sha`, `n` commits ahead of the upstream, to the upstream branch; `note` ends the notice.
+fn push_sha(dir: &Path, o: &Outgoing, sha: &str, n: usize, note: &str) -> Result<Pushed, String> {
+    let target = format!("{sha}:refs/heads/{}", o.remote_branch);
     let ran = git_with(dir, &["push", &o.remote, &target], PUSH, None)?;
     let said = tail(&format!("{}\n{}", ran.stderr, ran.stdout), 4);
     if ran.ok() {
-        let text = format!("Pushed {} to {}.", plural(o.ahead, "commit"), o.upstream);
-        return Ok(Pushed { notice: Notice::new(Tone::Success, text, said), refetch: false });
+        let text = format!("Pushed {} to {}.{note}", plural(n, "commit"), o.upstream);
+        return Ok(Pushed { notice: Notice::new(Tone::Success, text, said), refetch: false, sent: sha.to_string() });
     }
     if ["[rejected]", "non-fast-forward", "fetch first"].iter().any(|s| ran.stderr.contains(s)) {
-        let text = format!("{} has commits this branch lacks, so the push was refused. Rebase onto it, then push.", o.upstream);
-        return Ok(Pushed { notice: Notice::new(Tone::Warning, text, said), refetch: true });
+        let text = format!("{} has commits this branch lacks, so the push was refused. Rebase onto it, then push.{note}", o.upstream);
+        return Ok(Pushed { notice: Notice::new(Tone::Warning, text, said), refetch: true, sent: String::new() });
     }
     let detail = if said.is_empty() { format!("exit {}", ran.code) } else { said };
-    Ok(Pushed { notice: Notice::error("git push failed.", detail), refetch: false })
+    Ok(Pushed { notice: Notice::error(format!("git push failed.{note}"), detail), refetch: false, sent: String::new() })
 }
 
 /// The patch ids of a range, sorted; None when they cannot be read whole.
@@ -399,6 +503,52 @@ pub fn move_branch(dir: &Path, branch: &str, from: &str, to: &str, why: &str) ->
     }))
 }
 
+/// Moves the branch as `move_branch` does. With `shelve`, the uncommitted work in files the move
+/// changes is shelved first and put back after, moved or not; `Some` says how it went back.
+fn move_shelving(dir: &Path, branch: &str, from: &str, to: &str, why: &str, shelve: bool) -> Result<Option<Unshelved>, Unmoved> {
+    let files = if shelve { in_the_way(dir, from, to).map_err(Unmoved::InTheWay)? } else { vec![] };
+    if files.is_empty() {
+        return move_branch(dir, branch, from, to, why).map(|()| None);
+    }
+    let sha = shelve_files(dir, &files, why).map_err(Unmoved::InTheWay)?;
+    let moved = move_branch(dir, branch, from, to, why);
+    let back = unshelve(dir, &sha);
+    moved.map(|()| Some(back))
+}
+
+fn shelve_files(dir: &Path, files: &[String], why: &str) -> Result<String, String> {
+    let why = format!("for {}", why.trim_start_matches("dropin: "));
+    shelve(dir, files, &why).map_err(|e| format!("Shelving the changes in the way failed: {e}"))
+}
+
+/// A notice for a moved branch, told how its shelved work went back.
+fn with_shelf(notice: Notice, back: Option<Unshelved>) -> Notice {
+    match back {
+        None => notice,
+        Some(Unshelved::Back) => Notice { text: format!("{} Your shelved changes are back.", notice.text), ..notice },
+        Some(Unshelved::Clashed { sha, files }) => Notice::new(
+            Tone::Warning,
+            format!(
+                "{} Your shelved changes clash with the incoming ones in {}: resolve the conflict markers there. \
+                 The shelf stays in git's stash ({}) until you drop it.",
+                notice.text,
+                plural(files.len(), "file"),
+                short(&sha)
+            ),
+            files.join("\n"),
+        ),
+        Some(Unshelved::Kept { sha, detail }) => Notice::new(
+            Tone::Warning,
+            format!(
+                "{} Your shelved changes could not go back, so they wait in git's stash ({}): unshelve them once the files are free.",
+                notice.text,
+                short(&sha)
+            ),
+            detail,
+        ),
+    }
+}
+
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(10)]
 }
@@ -430,9 +580,10 @@ fn slash(path: &Path) -> String {
 /// other sessions edit it too, and staged work stays staged. Stops before starting when an
 /// incoming file has uncommitted changes; keeps the worktree for a conflict; compares patch
 /// ids before and after to show the commits survived. A branch with nothing of its own just
-/// moves to the upstream, with no worktree.
-pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, String> {
-    let notice = |n: Notice| Ok(Rebased { notice: Some(n), conflict: None });
+/// moves to the upstream, with no worktree. With `shelve`, uncommitted work in the incoming
+/// files is shelved for the moment the branch moves, then put back.
+pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path, shelve: bool) -> Result<Rebased, String> {
+    let notice = |n: Notice| Ok(Rebased { notice: Some(n), conflict: None, in_the_way: vec![] });
     if o.preview.is_some() || o.upstream.is_empty() {
         return notice(Notice::error("A preview list cannot be rebased.", ""));
     }
@@ -442,20 +593,15 @@ pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, Str
     // landed on both sides) is left alone by the rebase, so uncommitted work in it is no reason to stop.
     let differs = split_z(&out(dir, &["diff", "--name-only", "-z", "HEAD", up], "git diff")?);
     let incoming = overlap_of(&split_z(&out(dir, &["diff", "--name-only", "-z", &merge_base, up], "git diff")?), &differs);
-    let mut local = split_z(&out(dir, &["diff", "--name-only", "-z"], "git diff")?);
-    local.extend(split_z(&out(dir, &["diff", "--cached", "--name-only", "-z"], "git diff --cached")?));
-    local.extend(split_z(&out(dir, &["ls-files", "--others", "--exclude-standard", "-z"], "git ls-files")?));
-    let overlap = overlap_of(&incoming, &local);
-    if !overlap.is_empty() {
+    let overlap = overlap_of(&incoming, &changed_files(dir)?);
+    if !overlap.is_empty() && !shelve {
         let n = overlap.len();
-        return notice(Notice::error(
-            format!(
-                "Nothing was changed: {} also {} uncommitted changes here. Commit or set them aside first.",
-                plural(n, "incoming file"),
-                if n == 1 { "has" } else { "have" }
-            ),
-            overlap.join("\n"),
-        ));
+        let text = format!(
+            "Nothing was changed: {} also {} uncommitted changes here. Commit them, or shelve them for the rebase.",
+            plural(n, "incoming file"),
+            if n == 1 { "has" } else { "have" }
+        );
+        return Ok(Rebased { notice: Some(Notice::error(text, overlap.join("\n"))), conflict: None, in_the_way: overlap });
     }
 
     let from = trimmed(dir, &["rev-parse", "HEAD"], "git rev-parse")?;
@@ -463,8 +609,8 @@ pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, Str
     let why = format!("dropin: rebase onto {up}");
     let ahead = trimmed(dir, &["rev-list", "--count", &format!("{onto}..{from}")], "git rev-list")?;
     if ahead == "0" {
-        return notice(match move_branch(dir, &o.branch, &from, &onto, &why) {
-            Ok(()) => Notice::new(Tone::Success, format!("{} now matches {up}.", o.branch), ""),
+        return notice(match move_shelving(dir, &o.branch, &from, &onto, &why, shelve) {
+            Ok(back) => with_shelf(Notice::new(Tone::Success, format!("{} now matches {up}.", o.branch), ""), back),
             Err(unmoved) => unmoved_notice(&o.branch, unmoved, "the rebase ran"),
         });
     }
@@ -503,17 +649,18 @@ pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, Str
                     worktree: worktree.clone(),
                     files,
                 };
-                return Ok(Rebased { notice: None, conflict: Some(conflict) });
+                return Ok(Rebased { notice: None, conflict: Some(conflict), in_the_way: vec![] });
             }
             return notice(Notice::error("The rebase failed. Your checkout was not touched.", said));
         }
 
         let to = trimmed(wt, &["rev-parse", "HEAD"], "git rev-parse")?;
         let after = patch_ids(dir, &format!("{onto}..{to}"));
-        if let Err(unmoved) = move_branch(dir, &o.branch, &from, &to, &why) {
-            return notice(unmoved_notice(&o.branch, unmoved, "the rebase ran"));
-        }
-        notice(match (before, after) {
+        let back = match move_shelving(dir, &o.branch, &from, &to, &why, shelve) {
+            Ok(back) => back,
+            Err(unmoved) => return notice(unmoved_notice(&o.branch, unmoved, "the rebase ran")),
+        };
+        let rebased = match (before, after) {
             (Some(before), Some(after)) if before != after => Notice::new(
                 Tone::Warning,
                 format!(
@@ -529,7 +676,8 @@ pub fn rebase_onto(dir: &Path, o: &Outgoing, base: &Path) -> Result<Rebased, Str
                 said,
             ),
             _ => Notice::new(Tone::Success, format!("Rebased onto {up}. The patches were too large to compare."), said),
-        })
+        };
+        notice(with_shelf(rebased, back))
     })();
     if !kept {
         remove_worktree(dir, &worktree);
@@ -548,9 +696,10 @@ fn unmoved_notice(branch: &str, unmoved: Unmoved, during: &str) -> Notice {
 
 /// Checks a rebase someone finished in a conflict's worktree (done, nothing uncommitted, on top
 /// of the upstream, no conflict markers) and moves the branch there. The worktree is left for
-/// the caller: kept on a refusal, so the work can be fixed and adopted again.
-pub fn adopt(dir: &Path, c: &Conflict) -> Result<Adopted, String> {
-    let failed = |text: String, detail: String| Ok(Adopted { notice: Notice::error(text, detail), to: None, dropped: vec![] });
+/// the caller: kept on a refusal, so the work can be fixed and adopted again. With `shelve`,
+/// uncommitted work in the files the move changes is shelved for the move, then put back.
+pub fn adopt(dir: &Path, c: &Conflict, shelve: bool) -> Result<Adopted, String> {
+    let failed = |text: String, detail: String| Ok(Adopted { notice: Notice::error(text, detail), to: None, dropped: vec![], in_the_way: vec![] });
     let wt = Path::new(&c.worktree);
     if !wt.is_dir() {
         return failed(format!("{} is gone, so there is nothing to adopt.", c.worktree), String::new());
@@ -587,10 +736,25 @@ pub fn adopt(dir: &Path, c: &Conflict) -> Result<Adopted, String> {
     let theirs = subjects(format!("{}..{to}", c.onto))?;
     let dropped = missing_from(&mine, &theirs);
 
-    if let Err(unmoved) = move_branch(dir, &c.branch, &c.from, &to, "dropin: rebase resolved in a worktree") {
-        let notice = unmoved_notice(&c.branch, unmoved, "the conflict was resolved");
-        return Ok(Adopted { notice, to: None, dropped: vec![] });
+    if !shelve {
+        let in_the_way = in_the_way(dir, &c.from, &to)?;
+        if !in_the_way.is_empty() {
+            let text = format!(
+                "Nothing was changed: {} the rebase changes {} uncommitted changes here. Commit them, or shelve them to adopt.",
+                plural(in_the_way.len(), "file"),
+                if in_the_way.len() == 1 { "has" } else { "have" }
+            );
+            let notice = Notice::error(text, in_the_way.join("\n"));
+            return Ok(Adopted { notice, to: None, dropped: vec![], in_the_way });
+        }
     }
+    let back = match move_shelving(dir, &c.branch, &c.from, &to, "dropin: rebase resolved in a worktree", shelve) {
+        Ok(back) => back,
+        Err(unmoved) => {
+            let notice = unmoved_notice(&c.branch, unmoved, "the conflict was resolved");
+            return Ok(Adopted { notice, to: None, dropped: vec![], in_the_way: vec![] });
+        }
+    };
     let tone = if dropped.is_empty() { Tone::Success } else { Tone::Warning };
     let text = format!(
         "{} now has {} on top of {}{}. Review them before you push.",
@@ -599,5 +763,6 @@ pub fn adopt(dir: &Path, c: &Conflict) -> Result<Adopted, String> {
         c.upstream,
         if dropped.is_empty() { String::new() } else { format!("; {} dropped", plural(dropped.len(), "commit")) }
     );
-    Ok(Adopted { notice: Notice::new(tone, text, dropped.join("\n")), to: Some(to), dropped })
+    let notice = with_shelf(Notice::new(tone, text, dropped.join("\n")), back);
+    Ok(Adopted { notice, to: Some(to), dropped, in_the_way: vec![] })
 }

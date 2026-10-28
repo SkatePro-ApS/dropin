@@ -6,6 +6,7 @@ mod changes;
 mod ops;
 mod parse;
 mod run;
+mod shelf;
 mod status;
 
 pub use branches::*;
@@ -13,6 +14,7 @@ pub use changes::*;
 pub use ops::*;
 pub use parse::*;
 pub use run::*;
+pub use shelf::*;
 pub use status::*;
 
 #[cfg(test)]

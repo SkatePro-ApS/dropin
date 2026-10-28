@@ -4,7 +4,7 @@ resolver = "2"
 
 # One version for the app, the CLI and the installer; `dropin ping` and the updater read it.
 [workspace.package]
-version = "0.1.6"
+version = "0.1.7"
 license = "MIT"
 repository = "https://github.com/SkatePro-ApS/dropin"
 

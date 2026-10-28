@@ -253,8 +253,12 @@ types on the real keyboard or steals focus. Some caveats:
 1. Bump the version in the root `Cargo.toml` and run `cargo build` so `Cargo.lock` follows. Commit.
 2. Tag and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
 3. [`.github/workflows/release.yml`](.github/workflows/release.yml) builds the installer on Windows, signs it for
-   the updater and publishes a GitHub release with the setup exe, its `.sig` and `latest.json`. Edit the release
-   notes on GitHub if you like; the update dialog shows them.
+   the updater and publishes a GitHub release with the setup exe, its `.sig` and `latest.json`.
+4. Release notes: the update dialog shows the `notes` in `latest.json`, not the release's text on GitHub, so write
+   them in both. Put them in `notes.md`, then
+   `gh release edit v0.2.0 --notes-file notes.md`, `gh release download v0.2.0 -p latest.json`, set its `notes` to
+   the same text, and `gh release upload v0.2.0 latest.json --clobber`. The signature covers only the setup exe, so
+   editing `latest.json` is safe.
 
 Every installed copy finds the release through
 `https://github.com/SkatePro-ApS/dropin/releases/latest/download/latest.json` (`plugins.updater` in

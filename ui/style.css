@@ -296,7 +296,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 
 .commits { --author-size: 120px; --age-size: 56px; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .list { flex: 1; overflow: auto; scrollbar-gutter: stable; padding: 6px 0 10px; outline: none; }
-/* Over the upstream's commits only; it stays at the top while they scroll under it. */
+/* Over the commits to push and the upstream's; each stays at the top while its commits scroll under it. */
 .list-cols {
   position: sticky;
   top: -6px;
@@ -334,6 +334,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 }
 .list-head:first-child { padding-top: 4px; }
 .list-head .n { letter-spacing: 0; font-weight: 500; }
+/* In the To push column header, lined up with the rows' ticks below it. */
+.list-cols .tick { flex: none; align-self: center; width: 13px; height: 13px; margin: 0 0 0 -20px; accent-color: var(--accent); cursor: default; }
 .row {
   display: flex;
   align-items: center;

@@ -117,6 +117,9 @@ const filesCache = new Map();
 
 /** The Subject / Author / Age header: the list draws it over the upstream's commits only. */
 const listCols = $('list-cols');
+// The same column header over the commits to push; its box ticks or clears them all.
+const pushCols = listCols.cloneNode(true);
+pushCols.removeAttribute('id');
 
 // ---------------------------------------------------------------- reading
 
@@ -420,6 +423,32 @@ function toggleHeld(v, sha) {
   if (!v.held.delete(sha)) v.held.add(sha);
   renderList();
   renderFooter();
+}
+
+/**
+ * The To push header's box, for the commits listed under it (the matches, while filtering): ticked
+ * when none is held back. A click includes them all, or holds them all back when none was held.
+ */
+function tickAll(v, commits) {
+  const held = commits.filter(c => v.held.has(c.sha)).length;
+  const box = el('input', 'tick');
+  box.type = 'checkbox';
+  box.tabIndex = -1;
+  box.checked = held === 0;
+  box.indeterminate = held > 0 && held < commits.length;
+  box.title = held ? 'Include them all in the push' : 'Hold them all back from the push';
+  box.setAttribute('aria-label', box.title);
+  box.onmousedown = event => event.preventDefault();
+  box.onclick = event => {
+    event.stopPropagation();
+    for (const c of commits) {
+      if (held) v.held.delete(c.sha);
+      else v.held.add(c.sha);
+    }
+    renderList();
+    renderFooter();
+  };
+  return box;
 }
 
 async function push() {
@@ -912,6 +941,11 @@ function renderList() {
   const outgoing = on ? outgoingFound(v, words) : d.commits;
   const count = !d.commits.length ? undefined : on ? `${outgoing.length} of ${d.commits.length}` : String(d.ahead);
   list.append(head(d.preview ? `After ${d.preview}` : 'To push', count));
+  if (outgoing.length) {
+    pushCols.querySelector('.tick')?.remove();
+    if (!d.preview) pushCols.prepend(tickAll(v, outgoing));
+    list.append(pushCols);
+  }
   if (!d.commits.length) {
     const empty = el('div', 'empty');
     empty.append(el('strong', '', 'Nothing to push. '), `${d.branch} has no commits ${d.upstream} lacks.`);
@@ -2532,7 +2566,7 @@ function wireGutters() {
     if (split === 'author' || split === 'age') $('commits').style.setProperty(`--${split}-size`, `${px}px`);
   };
   for (const [split, px] of Object.entries(sizes)) apply(split, px);
-  for (const gutter of [...document.querySelectorAll('.gutter'), ...listCols.querySelectorAll('.col-grip')]) {
+  for (const gutter of [...document.querySelectorAll('.gutter'), ...listCols.querySelectorAll('.col-grip'), ...pushCols.querySelectorAll('.col-grip')]) {
     gutter.addEventListener('pointerdown', down => {
       down.preventDefault();
       gutter.setPointerCapture(down.pointerId);
@@ -2549,7 +2583,7 @@ function wireGutters() {
         // A column's grip is its left edge, and its right edge stays put: the subject takes the rest.
         if (split === 'author' || split === 'age') {
           px = gutter.parentElement.getBoundingClientRect().right - (event.clientX - grab);
-          const subject = listCols.querySelector('.subject').getBoundingClientRect().width;
+          const subject = gutter.closest('.list-cols').querySelector('.subject').getBoundingClientRect().width;
           px = Math.min(px, gutter.parentElement.getBoundingClientRect().width + subject - 80);
         }
         px = Math.max(split === 'age' ? 40 : 60, Math.round(px));

@@ -1016,7 +1016,59 @@ function commitRow(v, c, kind, words = []) {
     row.setAttribute('aria-selected', 'true');
   }
   row.onclick = () => pickCommit(c.sha);
+  if (kind.startsWith('history') && !v.data?.preview) {
+    row.oncontextmenu = event => {
+      event.preventDefault();
+      pickCommit(c.sha);
+      openMenu(event.clientX, event.clientY, historyMenu(v, c), $('list'));
+    };
+  }
   return row;
+}
+
+/** A commit on the upstream: revert it, live at once or on top of the branch to push later. */
+function historyMenu(v, c) {
+  const d = v.data;
+  const here = !(d.incoming ?? []).some(i => i.sha === c.sha);
+  return [
+    { label: 'Revert and Push…', run: () => revertCommit(c, true), danger: true },
+    {
+      label: 'Revert',
+      run: () => revertCommit(c, false),
+      disabled: !here,
+      title: here ? `Undo it in a new commit on top of ${d.branch}, to push later` : `${d.branch} does not have it yet: rebase onto ${d.upstream} first`,
+    },
+    { sep: true },
+    { label: 'Copy SHA', run: () => copyText(c.sha, `Copied ${c.short}.`) },
+  ];
+}
+
+/**
+ * Reverts an upstream commit. Revert and Push asks first, then pushes the revert alone, so it is
+ * live as soon as the push lands; the commits waiting to push stay here. Revert puts it on top
+ * of the branch instead.
+ */
+async function revertCommit(c, push) {
+  const name = current;
+  const d = view(name).data;
+  const step = async () => {
+    const r = await branchStep('revert', { sha: c.sha, push }, 'revert');
+    return r.notice ?? r;
+  };
+  if (!push) {
+    settle(await step());
+    return;
+  }
+  const waiting = d.ahead ? ` Only the revert goes out: your ${plural(d.ahead, 'commit')} to push ${d.ahead === 1 ? 'stays' : 'stay'} here.` : '';
+  // As revert_message in git/src/revert.rs: reverting a revert reapplies.
+  const subject = c.subject.startsWith('revert: ') ? `reapply: ${c.subject.slice(8)}` : `revert: ${c.subject}`;
+  await ask({
+    title: `Revert and push to ${d.upstream}?`,
+    text: `This pushes a new commit, “${subject}”, that undoes ${c.short} by ${c.author}. The diff shown is what it takes back.${waiting}`,
+    ok: 'Revert and Push',
+    danger: true,
+    run: step,
+  });
 }
 
 const PENCIL = '<svg class="icon" viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8h-3v-3z M9 4l3 3" /></svg>';

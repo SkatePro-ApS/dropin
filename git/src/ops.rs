@@ -16,11 +16,11 @@ const LIST_LIMIT: usize = 200;
 const HISTORY: usize = 20;
 /// A search reads this many of the upstream's newest commits.
 const SEARCH_DEPTH: usize = 10_000;
-const FETCH: Duration = Duration::from_secs(60);
-const PUSH: Duration = Duration::from_secs(180);
-const WORKTREE: Duration = Duration::from_secs(180);
-const REBASE: Duration = Duration::from_secs(300);
-const LONG: Duration = Duration::from_secs(60);
+pub(crate) const FETCH: Duration = Duration::from_secs(60);
+pub(crate) const PUSH: Duration = Duration::from_secs(180);
+pub(crate) const WORKTREE: Duration = Duration::from_secs(180);
+pub(crate) const REBASE: Duration = Duration::from_secs(300);
+pub(crate) const LONG: Duration = Duration::from_secs(60);
 const READ_TREE: Duration = Duration::from_secs(120);
 
 /// What a push would send, read at one pinned HEAD.
@@ -139,11 +139,11 @@ pub enum Unmoved {
 }
 
 /// git's stdout, or an error naming the step.
-fn out(dir: &Path, args: &[&str], what: &str) -> Result<String, String> {
+pub(crate) fn out(dir: &Path, args: &[&str], what: &str) -> Result<String, String> {
     git(dir, args)?.must(what)
 }
 
-fn trimmed(dir: &Path, args: &[&str], what: &str) -> Result<String, String> {
+pub(crate) fn trimmed(dir: &Path, args: &[&str], what: &str) -> Result<String, String> {
     Ok(out(dir, args, what)?.trim().to_string())
 }
 
@@ -549,7 +549,7 @@ fn with_shelf(notice: Notice, back: Option<Unshelved>) -> Notice {
     }
 }
 
-fn short(sha: &str) -> &str {
+pub(crate) fn short(sha: &str) -> &str {
     &sha[..sha.len().min(10)]
 }
 
@@ -571,7 +571,7 @@ pub fn remove_worktree(dir: &Path, worktree: &str) {
     let _ = git(dir, &["worktree", "prune"]);
 }
 
-fn slash(path: &Path) -> String {
+pub(crate) fn slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 

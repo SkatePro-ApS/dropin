@@ -59,6 +59,7 @@ fn main() {
             dialog::diff,
             dialog::push,
             dialog::rebase,
+            dialog::revert,
             dialog::adopt,
             dialog::abandon,
             dialog::unshelve,

@@ -29,6 +29,7 @@ row with a commit box, and image diffs. It works with any git repo; nothing in i
 | Area | Features |
 | --- | --- |
 | Push | The commits to push and origin/main (last 20); incoming commits are dotted. Search (Ctrl+F) filters the commits to push and searches origin/main's newest 10 000 commits by subject, message, author, email or sha; every word must match. From/To dates keep it to the commits authored in that range, with or without words. Push sends exactly the commit that was reviewed. Untick commits to hold them back from a push. The alert strip covers behind + Rebase (with Shelve and rebase when uncommitted work is in the way), a kept conflict, a shelf left in the stash, and Claude waiting. |
+| Revert | Right-click a commit in origin/main's history. **Revert and Push…** asks, then makes a commit that undoes it (`revert: <subject>`; a merge is undone against its first parent) on top of origin/main as it is on the remote and pushes that commit alone, so it is live as fast as a push and the commits to push stay unpushed. **Revert** puts it on top of the branch to push later. A revert that clashes with later changes to the same lines is refused, and nothing changes. There is no CLI command, as for push. |
 | Diff | Side by side (each side scrolls on its own) or unified. Images show before and after on a checkerboard. Pop the diff out into its own window. F7 / Shift+F7 step change by change. |
 | Branches | HEAD, Local and Remote in a tree with `/` folders and ↑↓ ahead/behind. Switch (Enter or double-click), new (Ctrl+Shift+N), rename (F2), delete (Del), delete on origin, rename or delete a folder, fetch all with prune. Ctrl+B hides the column. |
 | Commit | The **Uncommitted changes** row has a tree of Changes and Unversioned files with tri-state ticks. Commit (Ctrl+Enter), Commit and Push (Ctrl+Shift+Enter), Amend (off once HEAD is pushed), Rollback (Ctrl+Alt+Z). Only the ticked files go in the commit, and other staged files stay staged. |
@@ -171,6 +172,7 @@ cli/              dropin.exe: no Tauri, so it starts in milliseconds
 git/              dropin-git crate: all git work, no Tauri, with its own tests
   src/ops.rs        outgoing, reviewed push (holding commits back), worktree rebase, adopt, abandon
   src/shelf.rs      shelving uncommitted work in the way while the branch moves
+  src/revert.rs     reverting an upstream commit: pushed alone, or put on top of the branch
   src/branches.rs   switch, create, rename, delete (local and remote)
   src/changes.rs    status of the working tree, commit of ticked files, rollback
   src/parse.rs      parsing git's porcelain output
@@ -222,8 +224,8 @@ package's private copy of `%LOCALAPPDATA%`.
 cargo test -p dropin-git
 ```
 
-This runs 27 tests on throwaway repos in about 10 seconds. They cover the reviewed push, a refused push, a clean
-rebase that keeps staged files staged, conflict → adopt, the branch rules, and commits of ticked files. Add a test
+This runs 38 tests on throwaway repos in under a minute. They cover the reviewed push, a refused push, a clean
+rebase that keeps staged files staged, conflict → adopt, reverts, the branch rules, and commits of ticked files. Add a test
 here for any change to git behaviour.
 
 **UI tests without taking over the screen.** Start a release build hidden, with WebView2's debug port open, and

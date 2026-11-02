@@ -229,6 +229,24 @@ pub async fn push(app: AppHandle, name: String, head: String, held: Option<Vec<S
     serde_json::to_value(pushed).map_err(|e| e.to_string())
 }
 
+/// Reverts a commit on the upstream (the page's right-click on its history). With `push` the
+/// revert alone is pushed at once; without, it lands on top of the branch to push later. There is
+/// no CLI twin: like a push, a revert that goes out is the person's call in the window.
+#[tauri::command]
+pub async fn revert(app: AppHandle, name: String, sha: String, push: bool) -> Result<Value, String> {
+    let repo = repo_named(&app, &name)?;
+    let o = app.state::<Shown>().0.lock().unwrap().get(&name).cloned().ok_or("Read the repo again, then revert.")?;
+    let _held = pipe::hold(&app, &repo, "revert")?;
+    let path = repo.path.clone();
+    let done = pipe::blocking(move || {
+        let dir = Path::new(&path);
+        dropin_git::revert(dir, &o, &sha, push, &dropin_git::worktree_base(dir))
+    })
+    .await?;
+    let _ = app.emit("repo-changed", &name);
+    serde_json::to_value(done).map_err(|e| e.to_string())
+}
+
 /// Rebases onto the upstream in a worktree, as `dropin rebase` does. A conflict ends a waiting
 /// `dropin push-review` with status `conflict`: the session that opened the window resolves it.
 #[tauri::command]

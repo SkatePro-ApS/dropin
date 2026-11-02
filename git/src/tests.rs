@@ -796,3 +796,85 @@ fn rollback_restores_and_never_deletes_tracked_work() {
     let left: Vec<(&str, &str)> = left.files.iter().map(|f| (f.status.as_str(), f.path.as_str())).collect();
     assert_eq!(left, [("?", "added.txt")]);
 }
+
+// ---- revert ----
+
+#[test]
+fn revert_message_follows_the_log_style() {
+    assert_eq!(revert_message("fix(x): y", "abc"), "revert: fix(x): y\n\nThis reverts commit abc.\n");
+    assert_eq!(revert_message("revert: fix(x): y", "def"), "reapply: fix(x): y\n\nThis reverts commit def.\n");
+}
+
+/// Revert and push sends the revert alone: the branch's own commit stays unpushed, its uncommitted
+/// work stays, and the upstream it pushes onto is fetched first, though the list was read before B pushed.
+#[test]
+fn revert_and_push_sends_only_the_revert() {
+    let r = repos();
+    commit(&r.b, "bad.txt", "bad", "fix(x): bad change");
+    sh(&r.b, &["push", "-q"]);
+    let bad = head(&r.b);
+    sh(&r.a, &["pull", "-q"]);
+    commit(&r.a, "a1.txt", "x", "A one");
+    write(&r.a, "shared.txt", "one\ntwo\nthree\nlocal edit\n");
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    commit(&r.b, "b2.txt", "x", "B two");
+    sh(&r.b, &["push", "-q"]);
+
+    let pushed = revert(&r.a, &o, &bad, true, &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Success, "{:?}", pushed.notice);
+    sh(&r.b, &["pull", "-q"]);
+    assert_eq!(sh(&r.b, &["log", "-1", "--format=%s"]).trim(), "revert: fix(x): bad change");
+    assert!(!r.b.join("bad.txt").exists());
+    assert!(r.b.join("b2.txt").exists());
+    assert!(!r.b.join("a1.txt").exists(), "the branch's own commit went out");
+    let o = read_outgoing(&r.a, false, None).unwrap();
+    assert_eq!((subjects(&o), o.behind), (vec!["A one"], 2));
+    assert_eq!(std::fs::read_to_string(r.a.join("shared.txt")).unwrap(), "one\ntwo\nthree\nlocal edit\n");
+}
+
+/// A branch with nothing of its own follows the pushed revert.
+#[test]
+fn revert_and_push_moves_a_branch_with_nothing_to_push() {
+    let r = repos();
+    commit(&r.a, "bad.txt", "bad", "Bad");
+    sh(&r.a, &["push", "-q"]);
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let pushed = revert(&r.a, &o, &head(&r.a), true, &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Success, "{:?}", pushed.notice);
+    assert_eq!(head(&r.a), pushed.sent);
+    assert!(!r.a.join("bad.txt").exists());
+}
+
+/// Revert alone puts the revert on top of the branch and pushes nothing.
+#[test]
+fn revert_lands_on_top_of_the_branch() {
+    let r = repos();
+    commit(&r.a, "bad.txt", "bad", "Bad");
+    sh(&r.a, &["push", "-q"]);
+    let bad = head(&r.a);
+    commit(&r.a, "a1.txt", "x", "A one");
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let done = revert(&r.a, &o, &bad, false, &r.root.join("wt")).unwrap();
+    assert_eq!(done.notice.tone, Tone::Success, "{:?}", done.notice);
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    assert_eq!(subjects(&o), vec!["revert: Bad", "A one"]);
+    assert!(!r.a.join("bad.txt").exists());
+}
+
+/// A later commit changed the same lines: nothing is made, pushed or moved.
+#[test]
+fn revert_refuses_a_clash_with_later_commits() {
+    let r = repos();
+    commit(&r.a, "shared.txt", "one\nBAD\nthree\n", "Bad");
+    let bad = head(&r.a);
+    commit(&r.a, "shared.txt", "one\nLATER\nthree\n", "Later");
+    sh(&r.a, &["push", "-q"]);
+    let before = head(&r.a);
+    let o = read_outgoing(&r.a, true, None).unwrap();
+    let pushed = revert(&r.a, &o, &bad, true, &r.root.join("wt")).unwrap();
+    assert_eq!(pushed.notice.tone, Tone::Error);
+    assert_eq!(pushed.notice.detail, "shared.txt");
+    sh(&r.b, &["pull", "-q"]);
+    assert_eq!(head(&r.b), before);
+    assert_eq!(head(&r.a), before);
+}

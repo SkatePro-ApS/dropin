@@ -4,6 +4,7 @@
 // F7 opens the next file on its first change.
 
 import { shapeDiff, diffRows, unifiedOf, diffStats } from './diff.js';
+import { langOf, paint } from './syntax.js';
 
 /** A new element with a class and text. */
 function el(tag, className, text) {
@@ -152,7 +153,8 @@ export class DiffView {
       if (shaped.truncated) this.body.append(el('div', 'diff-cut', "git's output passed 16 MB, so the end of this diff is missing."));
       if (shaped.cut) this.body.append(el('div', 'diff-cut', shaped.cut));
       if (shaped.rows.length) {
-        const drawn = this.layout() === 'split' ? splitTable(shaped.rows) : unifiedTable(shaped.rows);
+        const lang = langOf(file.path);
+        const drawn = this.layout() === 'split' ? splitTable(shaped.rows, lang) : unifiedTable(shaped.rows, lang);
         this.body.append(drawn.node);
         this.changes = drawn.changes;
       } else {
@@ -338,16 +340,39 @@ export class DiffView {
   }
 }
 
-/** A cell's text, with changed words in <mark>. */
-function textCell(cell, side) {
+/** A cell's text, coloured for its language, with changed words in <mark>. */
+function textCell(cell, side, lang) {
   const td = el('td', `text ${side}`);
   if (!cell) {
     td.classList.add('gap');
     return td;
   }
   if (cell.kind !== 'context') td.classList.add(cell.kind);
-  for (const seg of cell.segs) td.append(seg.isChanged ? el('mark', '', seg.text) : document.createTextNode(seg.text));
+  const line = cell.segs.map(seg => seg.text).join('');
+  const runs = paint(line, lang);
+  let at = 0;
+  for (const seg of cell.segs) {
+    const end = at + seg.text.length;
+    const node = seg.isChanged ? el('mark') : td;
+    painted(node, line, at, end, runs);
+    if (seg.isChanged) td.append(node);
+    at = end;
+  }
   return td;
+}
+
+/** Appends `line[from, to)` to `node`, the coloured runs inside it as spans. */
+function painted(node, line, from, to, runs) {
+  let at = from;
+  for (const [start, end, kind] of runs) {
+    if (end <= at) continue;
+    if (start >= to) break;
+    if (start > at) node.append(line.slice(at, start));
+    const stop = Math.min(end, to);
+    node.append(el('span', `tok-${kind}`, line.slice(Math.max(start, at), stop)));
+    at = stop;
+  }
+  if (at < to) node.append(line.slice(at, to));
 }
 
 function noCell(n, cell) {
@@ -387,7 +412,7 @@ function changeIds(lines, changed) {
  * long line on one side does not push the other out of view. Every row is one line high, so the
  * two stay level while the diff scrolls down.
  */
-function splitTable(rows) {
+function splitTable(rows, lang) {
   const { ids, count } = changeIds(rows, row => [row.left, row.right].some(c => c && c.kind !== 'context'));
   const changes = Array.from({ length: count }, () => []);
   const panes = el('div', 'split-panes');
@@ -401,7 +426,7 @@ function splitTable(rows) {
       }
       const tr = el('tr');
       const cell = row[side];
-      tr.append(noCell(cell?.no, cell), textCell(cell, side === 'left' ? 'old' : 'new'));
+      tr.append(noCell(cell?.no, cell), textCell(cell, side === 'left' ? 'old' : 'new', lang));
       if (ids[i] >= 0) changes[ids[i]].push(tr);
       body.append(tr);
     });
@@ -414,7 +439,7 @@ function splitTable(rows) {
   return { node: panes, changes };
 }
 
-function unifiedTable(rows) {
+function unifiedTable(rows, lang) {
   const lines = unifiedOf(rows);
   const { ids, count } = changeIds(lines, line => line.cell.kind !== 'context');
   const changes = Array.from({ length: count }, () => []);
@@ -429,7 +454,7 @@ function unifiedTable(rows) {
     const kind = line.cell.kind;
     const mark = el('td', 'mark', kind === 'added' ? '+' : kind === 'removed' ? '−' : '');
     if (kind !== 'context') mark.classList.add(kind);
-    tr.append(noCell(line.oldNo, line.cell), noCell(line.newNo, line.cell), mark, textCell(line.cell, 'one'));
+    tr.append(noCell(line.oldNo, line.cell), noCell(line.newNo, line.cell), mark, textCell(line.cell, 'one', lang));
     if (ids[i] >= 0) changes[ids[i]].push(tr);
     body.append(tr);
   });

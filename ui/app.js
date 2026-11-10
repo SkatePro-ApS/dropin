@@ -65,7 +65,10 @@ function view(name) {
       inflight: 0,
       readAt: 0,
       fetchedAt: 0,
-      sel: null,
+      // undefined until the first read picks a row; null when the person picked none (the right column hides).
+      sel: undefined,
+      // The last push: its head and count, shown green on the upstream's list until `until`.
+      pushed: null,
       files: null,
       filesSha: null,
       filesError: null,
@@ -115,7 +118,7 @@ function view(name) {
 /** Commits never change, so their file lists are kept for the app's life. */
 const filesCache = new Map();
 
-/** The Subject / Author / Age header: the list draws it over the upstream's commits only. */
+/** The Subject / Age header: the list draws it over the upstream's commits only. */
 const listCols = $('list-cols');
 // The same column header over the commits to push; its box ticks or clears them all.
 const pushCols = listCols.cloneNode(true);
@@ -205,9 +208,9 @@ function listed(v) {
   return [...outgoingFound(v, words), ...foundCommits(v, words)];
 }
 
-/** Keeps the picked commit (or the Uncommitted row) when it is still listed; else picks the first. */
+/** Keeps the picked commit (or the Uncommitted row, or none) when it is still listed; else picks the first. */
 function keepSelection(v) {
-  if (v.sel === WORK) return;
+  if (v.sel === WORK || v.sel === null) return;
   const all = listed(v);
   if (!all.some(c => c.sha === v.sel)) v.sel = all[0]?.sha ?? WORK;
 }
@@ -451,6 +454,17 @@ function tickAll(v, commits) {
   return box;
 }
 
+/** How long pushed commits stay green on the upstream's list. */
+const PUSHED_FOR = 5 * 60_000;
+
+/** The shas of the last push's commits on the upstream's history, while they are still shown green. */
+function freshlyPushed(v) {
+  const p = v.pushed;
+  const history = v.data?.history ?? [];
+  const at = p && Date.now() < p.until ? history.findIndex(c => c.sha === p.sent) : -1;
+  return new Set(at < 0 ? [] : history.slice(at, at + p.count).map(c => c.sha));
+}
+
 async function push() {
   const name = current;
   const v = view(name);
@@ -464,7 +478,15 @@ async function push() {
     const pushed = await api.invoke('push', { name, head: v.data.head, held });
     v.notice = pushed.notice;
     refetch = pushed.refetch;
-    if (pushed.notice.tone === 'success') v.held.clear();
+    if (pushed.notice.tone === 'success') {
+      // No banner: the pushed commits show green on the upstream's list for a while, and nothing stays picked.
+      v.notice = null;
+      v.pushed = { sent: pushed.sent, count: v.data.ahead - held.length, until: Date.now() + PUSHED_FOR };
+      setTimeout(() => name === current && renderList(), PUSHED_FOR + 100);
+      v.held.clear();
+      v.sel = null;
+      v.diffOpen = false;
+    }
   } catch (error) {
     v.notice = { tone: 'error', text: String(error) };
   }
@@ -853,12 +875,6 @@ function renderAlerts() {
   if (d.waiting === 'claude') {
     box.append(alert('info', 'C', 'Claude is waiting on this review. Push answers it; Cancel tells it you did not push.'));
   }
-  if (d.behind > 0 && !kept.length) {
-    const text = `${d.upstream} has ${plural(d.behind, 'commit')} this branch lacks (marked • below). Rebase onto ${d.upstream} before pushing.`;
-    box.append(alert('warning', '↓', text, [
-      { label: v.busy === 'rebase' ? 'Rebasing…' : 'Rebase', strong: true, run: () => rebase() },
-    ]));
-  }
   if (d.fetchError) {
     box.append(alert('warning', '!', 'Fetching the upstream failed, so the lists may be out of date.', [], d.fetchError));
   }
@@ -947,8 +963,10 @@ function renderList() {
     list.append(pushCols);
   }
   if (!d.commits.length) {
-    const empty = el('div', 'empty');
+    const empty = el('div', 'empty nothing');
     empty.append(el('strong', '', 'Nothing to push. '), `${d.branch} has no commits ${d.upstream} lacks.`);
+    empty.title = 'Pick nothing: hides the files and message';
+    empty.onclick = () => pickCommit(null);
     list.append(empty);
   } else if (!outgoing.length) {
     list.append(el('div', 'empty', 'None of them match.'));
@@ -957,7 +975,8 @@ function renderList() {
 
   if (d.historyRef) {
     const incoming = new Set((d.incoming ?? []).map(c => c.sha));
-    const kind = c => (incoming.has(c.sha) ? 'history incoming' : 'history');
+    const pushed = freshlyPushed(v);
+    const kind = c => (incoming.has(c.sha) ? 'history incoming' : pushed.has(c.sha) ? 'history pushed' : 'history');
     if (on) {
       renderFound(v, list, head, words, kind);
     } else {
@@ -1010,7 +1029,10 @@ function commitRow(v, c, kind, words = []) {
     };
     row.append(box);
   }
-  row.append(markedSpan('subject', c.subject, words), markedSpan('author', c.author, words), el('span', 'age', age(c.at)));
+  // Commits to push are your own: only the upstream's show who wrote them, under the subject.
+  const subject = markedSpan('subject', c.subject, words);
+  if (kind !== 'outgoing') subject.append(markedSpan('author', c.author, words));
+  row.append(subject, el('span', 'age', age(c.at)));
   if (c.sha === v.sel) {
     row.classList.add('selected');
     row.setAttribute('aria-selected', 'true');
@@ -1091,7 +1113,7 @@ function workRow(v) {
   } else {
     subject.append(el('span', 'text', 'No uncommitted changes'));
   }
-  row.append(subject, el('span', 'author'), el('span', 'age'));
+  row.append(subject, el('span', 'age'));
   if (v.sel === WORK) {
     row.classList.add('selected');
     row.setAttribute('aria-selected', 'true');
@@ -1104,6 +1126,9 @@ function pickCommit(sha) {
   const v = view(current);
   if (v.sel === sha) return;
   v.sel = sha;
+  // Picking nothing closes the right column, and its diff with it.
+  if (sha === null) v.diffOpen = false;
+  showDetail();
   for (const row of $('list').querySelectorAll('.row')) {
     const on = row.dataset.sha === sha;
     row.classList.toggle('selected', on);
@@ -1119,8 +1144,17 @@ function selectedCommit(v) {
 }
 
 function renderDetail() {
+  showDetail();
   renderTree();
   renderMessage();
+}
+
+/** The right column (files and message) shows only while a row is picked. */
+function showDetail() {
+  const none = !current || !view(current).sel;
+  $('columns').classList.toggle('no-detail', none);
+  $('detail').hidden = none;
+  $('detail-gutter').hidden = none;
 }
 
 /** Files as nested folders; a folder with one folder and no files merges into it (`a/b`). */
@@ -1752,6 +1786,10 @@ function renderFooter() {
   const d = v?.data;
   button.disabled = !v || !canPush(v);
   cancelButton.textContent = d && !d.error && d.ahead > 0 ? 'Cancel' : 'Close';
+  const rebaseButton = $('rebase');
+  rebaseButton.hidden = !(d && !d.error && d.behind > 0 && !d.kept?.length);
+  rebaseButton.disabled = Boolean(v?.busy);
+  rebaseButton.replaceChildren(...(v?.busy === 'rebase' ? [el('span', 'spinner'), 'Rebasing…'] : [`Rebase onto ${d?.upstream}`]));
   if (v?.busy === 'push') {
     button.innerHTML = '<span class="spinner"></span>Pushing…';
     return;
@@ -1762,7 +1800,7 @@ function renderFooter() {
   if (d.kept?.length) {
     note.textContent = 'Finish or abandon the kept rebase first.';
   } else if (d.behind > 0) {
-    note.textContent = `Rebase onto ${d.upstream} first.`;
+    note.textContent = `${d.upstream} has ${plural(d.behind, 'commit')} this branch lacks (in yellow). Rebase first.`;
   } else if (held && held === d.ahead) {
     note.textContent = 'Every commit is held back. Tick one to push it.';
   } else if (held) {
@@ -1892,8 +1930,9 @@ function branchTitle(b) {
 function renderBranches() {
   const columns = $('columns');
   columns.classList.toggle('no-branches', !showBranches);
-  $('branches').hidden = !showBranches;
+  $('branches').classList.toggle('collapsed', !showBranches);
   $('branches-gutter').hidden = !showBranches;
+  $('collapse-branches').setAttribute('aria-expanded', String(showBranches));
   $('toggle-branches').setAttribute('aria-pressed', String(showBranches));
   $('toggle-branches').classList.toggle('on', showBranches);
   if (!showBranches) return;
@@ -2615,7 +2654,7 @@ function wireGutters() {
     if (split === 'columns') $('columns').style.setProperty('--left-size', `${px}px`);
     if (split === 'message') document.querySelector('.detail').style.setProperty('--message-size', `${px}px`);
     if (split === 'diff') $('work').style.setProperty('--diff-size', `${px}px`);
-    if (split === 'author' || split === 'age') $('commits').style.setProperty(`--${split}-size`, `${px}px`);
+    if (split === 'age') $('commits').style.setProperty('--age-size', `${px}px`);
   };
   for (const [split, px] of Object.entries(sizes)) apply(split, px);
   for (const gutter of [...document.querySelectorAll('.gutter'), ...listCols.querySelectorAll('.col-grip'), ...pushCols.querySelectorAll('.col-grip')]) {
@@ -2633,7 +2672,7 @@ function wireGutters() {
         if (split === 'message') px = document.querySelector('.detail').getBoundingClientRect().bottom - event.clientY;
         if (split === 'diff') px = $('work').getBoundingClientRect().bottom - event.clientY;
         // A column's grip is its left edge, and its right edge stays put: the subject takes the rest.
-        if (split === 'author' || split === 'age') {
+        if (split === 'age') {
           px = gutter.parentElement.getBoundingClientRect().right - (event.clientX - grab);
           const subject = gutter.closest('.list-cols').querySelector('.subject').getBoundingClientRect().width;
           px = Math.min(px, gutter.parentElement.getBoundingClientRect().width + subject - 80);
@@ -2735,6 +2774,8 @@ async function start() {
   window.addEventListener('blur', closeMenu);
   $('branch-tree').addEventListener('scroll', closeMenu);
   $('toggle-branches').onclick = toggleBranches;
+  $('collapse-branches').onclick = toggleBranches;
+  $('rebase').onclick = () => rebase();
   $('new-branch').onclick = () => current && newBranch('HEAD');
   $('fetch-all').onclick = () => current && fetchAll();
   $('modal-cancel').onclick = () => {

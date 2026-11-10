@@ -506,8 +506,6 @@ async function rebase(shelve = false) {
     const r = await api.invoke('rebase', { name, shelve });
     if (r.inTheWay?.length) {
       v.notice = { ...r.notice, actions: [{ label: 'Shelve and rebase', strong: true, run: () => rebase(true) }] };
-    } else if (r.status === 'up-to-date') {
-      v.notice = { tone: 'success', text: `${r.branch} already has everything on ${r.upstream}.` };
     } else if (r.status === 'conflict') {
       // A waiting review is answered with the conflict, so the session that opened the window resolves it.
       const handed = {
@@ -518,8 +516,10 @@ async function rebase(shelve = false) {
         tone: 'warning',
         text: `The rebase stopped on a conflict in ${plural(r.files.length, 'file')}. Your branch was not touched; the rebase waits in its worktree.${handed}`,
       };
-    } else {
-      v.notice = r.notice ?? { tone: r.ok ? 'success' : 'error', text: r.error ?? r.status };
+    } else if (r.status !== 'up-to-date') {
+      const notice = r.notice ?? { tone: r.ok ? 'success' : 'error', text: r.error ?? r.status };
+      // A clean rebase needs no banner: the Rebase button goes and the yellow commits turn grey.
+      v.notice = notice.tone === 'success' ? null : notice;
     }
     v.fetchedAt = Date.now();
   } catch (error) {

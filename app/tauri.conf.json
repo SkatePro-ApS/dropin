@@ -14,7 +14,7 @@
         "title": "Push Commits",
         "width": 1100,
         "height": 760,
-        "minWidth": 720,
+        "minWidth": 480,
         "minHeight": 480,
         "visible": false
       }

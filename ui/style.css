@@ -179,6 +179,8 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 .app {
   display: grid;
   grid-template-rows: auto auto auto 1fr auto;
+  /* minmax(0, …): a long line inside must not widen the window past its edge. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas: "bar" "progress" "alerts" "work" "foot";
   height: 100vh;
 }
@@ -299,12 +301,12 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
   --left-size: 38%;
   --branches-size: 250px;
   display: grid;
-  grid-template-columns: minmax(170px, var(--branches-size)) auto minmax(200px, var(--left-size)) auto minmax(260px, 1fr);
+  grid-template-columns: minmax(min(170px, 25%), var(--branches-size)) auto minmax(min(200px, 33%), var(--left-size)) auto minmax(min(260px, 38%), 1fr);
   min-height: 0;
 }
 /* Collapsed branches keep a narrow strip with the chevron; with nothing picked the right column hides. */
-.columns.no-branches { grid-template-columns: 30px minmax(200px, var(--left-size)) auto minmax(260px, 1fr); }
-.columns.no-detail { grid-template-columns: minmax(170px, var(--branches-size)) auto 1fr; }
+.columns.no-branches { grid-template-columns: 30px minmax(min(200px, 33%), var(--left-size)) auto minmax(min(260px, 38%), 1fr); }
+.columns.no-detail { grid-template-columns: minmax(min(170px, 25%), var(--branches-size)) auto 1fr; }
 .columns.no-branches.no-detail { grid-template-columns: 30px 1fr; }
 .branches.collapsed { border-right: 1px solid var(--line); }
 .branches.collapsed .toolbar { padding: 0; justify-content: center; }
@@ -318,7 +320,7 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 .gutter-h::after { inset: -3px 0; }
 .gutter.dragging, .gutter:hover { background: var(--accent); }
 
-.commits { --age-size: 56px; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.commits { --age-size: 56px; min-width: 0; overflow: hidden; min-height: 0; display: flex; flex-direction: column; }
 .list { flex: 1; overflow: auto; scrollbar-gutter: stable; padding: 6px 0 10px; outline: none; }
 /* Over the commits to push and the upstream's; each stays at the top while its commits scroll under it. */
 .list-cols {
@@ -420,9 +422,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 .search input::placeholder { color: var(--faint); }
 .search-bar.active .search { color: var(--accent); }
 /* From/To: quiet until hovered, focused or set. */
-.dates { flex: none; display: flex; align-items: center; gap: 2px; margin-left: 4px; color: var(--faint); }
+.dates { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 2px; margin-left: 4px; color: var(--faint); }
 .dates input {
-  width: 118px;
+  flex: 0 1 118px;
+  min-width: 0;
   height: 26px;
   padding: 0 4px;
   border: 1px solid transparent;
@@ -445,8 +448,10 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
   display: grid;
   /* The commit box gives way first, so a docked diff never squeezes the file tree to a row. */
   grid-template-rows: auto minmax(72px, 1fr) auto minmax(60px, min(var(--message-size), 45%));
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
 }
 .toolbar {
   display: flex;
@@ -496,8 +501,12 @@ button.primary:hover:not(:disabled) { background: var(--accent-hover); border-co
 }
 
 /* Branches column: HEAD, then Local and Remote trees. */
-.branches { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; background: var(--bg); }
+.branches { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; overflow: hidden; grid-template-columns: minmax(0, 1fr); background: var(--bg); }
 .pane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 6px;
   font-size: 11px;
   font-weight: 600;
@@ -750,6 +759,7 @@ td.added mark { background: var(--diff-add-word); color: inherit; border-radius:
 }
 .foot-note { color: var(--dim); font-size: 12px; margin-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .foot-note .mono { color: var(--text); }
+.foot button { flex: none; white-space: nowrap; }
 button.warn { background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-text); font-weight: 600; }
 button.warn:hover:not(:disabled) { background: var(--warn-bg); border-color: var(--warn-text); }
 

@@ -669,14 +669,14 @@ dependencies = [
 
 [[package]]
 name = "dropin"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "dropin-app"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "dropin-git",
  "serde",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "dropin-git"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "serde",
  "serde_json",

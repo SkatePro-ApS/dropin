@@ -188,6 +188,13 @@ pub async fn search(
     pipe::blocking(move || dropin_git::search_history(Path::new(&repo.path), &upstream, &query, since, until)).await
 }
 
+/// When GitHub got each of `shas` on `upstream`, in milliseconds; the page's Age shows it.
+#[tauri::command]
+pub async fn push_times(app: AppHandle, name: String, upstream: String, shas: Vec<String>) -> Result<HashMap<String, i64>, String> {
+    let repo = repo_named(&app, &name)?;
+    pipe::blocking(move || dropin_git::push_times(Path::new(&repo.path), &upstream, &shas)).await
+}
+
 /// One file's raw diff in a commit; the page shapes it.
 #[tauri::command]
 pub async fn diff(app: AppHandle, name: String, sha: String, file: dropin_git::FileChange) -> Result<Value, String> {

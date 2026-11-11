@@ -9,16 +9,57 @@ use crate::*;
 
 #[test]
 fn parse_log_reads_fields_and_body() {
-    let text = "abc\x1fa\x1fAnn\x1f1700000000\x1fFix it\x1fann@x.dk\x1f14/11/2023 at 23:13\x1fWhy:\nbecause\n\x1e\n\
-                def\x1fd\x1fBo\x1f1700000001\x1fAdd\x1fbo@x.dk\x1f14/11/2023 at 23:13\x1f\x1e\n";
+    let text = "abc\x1fa\x1fAnn\x1f1700000000\x1fFix it\x1fann@x.dk\x1f14/11/2023 at 23:13\x1f1700000050\x1fWhy:\nbecause\n\x1e\n\
+                def\x1fd\x1fBo\x1f1700000001\x1fAdd\x1fbo@x.dk\x1f14/11/2023 at 23:13\x1f1700000051\x1f\x1e\n";
     let log = parse_log(text);
     assert_eq!(log.len(), 2);
     assert_eq!(log[0].sha, "abc");
     assert_eq!(log[0].at, 1_700_000_000_000);
+    assert_eq!(log[0].committed, 1_700_000_050_000);
     assert_eq!(log[0].subject, "Fix it");
     assert_eq!(log[0].body, "Why:\nbecause");
     assert_eq!(log[1].author, "Bo");
     assert_eq!(log[1].body, "");
+}
+
+#[test]
+fn github_repo_reads_every_url_form() {
+    for url in ["https://github.com/o/r.git", "git@github.com:o/r.git", "ssh://git@github.com/o/r", "https://github.com/o/r/\n", "git@github.com:/o/r.git", "https://me@github.com/o/r"] {
+        assert_eq!(github_repo(url).as_deref(), Some("o/r"), "{url}");
+    }
+    assert_eq!(github_repo("https://gitlab.com/o/r.git"), None);
+    assert_eq!(github_repo("https://github.com/o"), None);
+}
+
+#[test]
+fn parse_pushes_reads_tsv() {
+    let p = parse_pushes("a1\tb1\t1762771919\nbad line\n0000\tc2\t1762770000\n");
+    assert_eq!(p, vec![("a1".into(), "b1".into(), 1_762_771_919_000), ("0000".into(), "c2".into(), 1_762_770_000_000)]);
+}
+
+#[test]
+fn push_times_from_a_non_github_remote_is_an_error() {
+    let r = repos();
+    assert!(push_times(&r.a, "origin/main", &[]).is_err());
+}
+
+#[test]
+fn times_of_gives_each_commit_its_push() {
+    let r = repos();
+    let start = head(&r.a);
+    commit(&r.a, "x.txt", "1\n", "One");
+    let one = head(&r.a);
+    commit(&r.a, "x.txt", "2\n", "Two");
+    let two = head(&r.a);
+    commit(&r.a, "x.txt", "3\n", "Three");
+    let three = head(&r.a);
+    let zero = "0".repeat(40);
+    // Newest first: one push sent Two and Three, an earlier one sent One, the first one Start.
+    let pushes = vec![(one.clone(), three.clone(), 30), (start.clone(), one.clone(), 20), (zero, start.clone(), 10), ("f".repeat(40), "e".repeat(40), 5)];
+    let wanted = [three.clone(), two.clone(), one.clone(), start.clone(), "c".repeat(40)];
+    let t = times_of(&r.a, pushes, &wanted);
+    assert_eq!((t[&three], t[&two], t[&one], t[&start]), (30, 30, 20, 10));
+    assert_eq!(t.len(), 4);
 }
 
 #[test]

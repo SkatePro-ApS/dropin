@@ -56,6 +56,7 @@ fn main() {
             dialog::outgoing,
             dialog::files,
             dialog::search,
+            dialog::push_times,
             dialog::diff,
             dialog::push,
             dialog::rebase,

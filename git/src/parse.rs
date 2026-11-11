@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// `git log` format: fields split by 0x1f, records ended by 0x1e, so subjects may hold
 /// anything. The body comes last, since it is the one field with line breaks.
-pub const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%ae%x1f%ad%x1f%b%x1e";
+pub const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%ae%x1f%ad%x1f%ct%x1f%b%x1e";
 
 /// `%ad` as PhpStorm's details show it, in the computer's own time zone: `13/10/2026 at 13:42`.
 pub const LOG_DATE: &str = "--date=format-local:%d/%m/%Y at %H:%M";
@@ -26,6 +26,9 @@ pub struct Commit {
     pub at: i64,
     /// Author time as the details show it: `13/10/2026 at 13:42`.
     pub date: String,
+    /// Committer time in milliseconds: a rebase or a GitHub merge moves it, so the list's Age
+    /// falls back to it when GitHub gives no push time.
+    pub committed: i64,
     pub subject: String,
     /// The message after the subject, trimmed; '' when there is none.
     pub body: String,
@@ -92,6 +95,7 @@ pub fn parse_log(stdout: &str) -> Vec<Commit> {
             let subject = field.next().unwrap_or("");
             let email = field.next().unwrap_or("");
             let date = field.next().unwrap_or("");
+            let committed = field.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) * 1000;
             let body: String = field.collect();
             Some(Commit {
                 sha: sha.to_string(),
@@ -100,6 +104,7 @@ pub fn parse_log(stdout: &str) -> Vec<Commit> {
                 email: clean(email),
                 at,
                 date: clean(date),
+                committed,
                 subject: clean(subject),
                 body: fit(clean(&body).trim(), BODY_LIMIT),
             })

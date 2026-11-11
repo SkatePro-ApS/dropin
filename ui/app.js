@@ -69,6 +69,9 @@ function view(name) {
       sel: undefined,
       // The last push: its head and count, shown green on the upstream's list until `until`.
       pushed: null,
+      // When GitHub got each upstream commit (sha → ms), null where it could not say; a pushed
+      // commit's time never changes, so each sha is asked once.
+      pushTimes: new Map(),
       files: null,
       filesSha: null,
       filesError: null,
@@ -145,6 +148,7 @@ async function read(name, fetch = false) {
     if (fetch && !data.fetchError && !data.error) v.fetchedAt = Date.now();
     // The upstream may have moved, so a search runs again.
     if (searchOn(v)) search(name);
+    readPushTimes(name, data.history ?? []);
     keepSelection(v);
   } catch (error) {
     if (token !== v.token) return;
@@ -692,6 +696,27 @@ function clearSearch() {
   onSearchInput();
 }
 
+/**
+ * Asks GitHub (through gh) when the upstream's commits were pushed, for the list's Age; it answers
+ * after the list is drawn. Without an answer a commit keeps its committer time.
+ */
+async function readPushTimes(name, commits) {
+  const v = view(name);
+  const upstream = v.data?.historyRef;
+  const shas = commits.map(c => c.sha).filter(sha => !v.pushTimes.has(sha));
+  if (!upstream || !shas.length) return;
+  for (const sha of shas) v.pushTimes.set(sha, null);
+  let times;
+  try {
+    times = await api.invoke('push_times', { name, upstream, shas });
+  } catch {
+    // shortcut: a failure (no gh, offline, not GitHub) is not asked again until the app restarts.
+    return;
+  }
+  for (const [sha, at] of Object.entries(times)) v.pushTimes.set(sha, at);
+  if (name === current && Object.keys(times).length) renderList();
+}
+
 /** Searches the upstream's history, beyond the commits the list shows; a newer search wins. */
 async function search(name) {
   const v = view(name);
@@ -712,6 +737,7 @@ async function search(name) {
     if (token !== v.searchToken) return;
     v.found = { ...found, ref };
     v.foundError = null;
+    readPushTimes(name, found.commits);
   } catch (error) {
     if (token !== v.searchToken) return;
     v.found = null;
@@ -1032,7 +1058,12 @@ function commitRow(v, c, kind, words = []) {
   // Commits to push are your own: only the upstream's show who wrote them, under the subject.
   const subject = markedSpan('subject', c.subject, words);
   if (kind !== 'outgoing') subject.append(markedSpan('author', c.author, words));
-  row.append(subject, el('span', 'age', age(c.at)));
+  // The upstream's commits show when they reached GitHub, else when they were last committed.
+  const pushedAt = kind === 'outgoing' ? null : v.pushTimes.get(c.sha);
+  const at = kind === 'outgoing' ? c.at : pushedAt ?? c.committed;
+  const ageCell = el('span', 'age', age(at));
+  if (kind !== 'outgoing') ageCell.title = `${pushedAt ? 'Pushed' : 'Committed'} ${fullDate(at)}`;
+  row.append(subject, ageCell);
   if (c.sha === v.sel) {
     row.classList.add('selected');
     row.setAttribute('aria-selected', 'true');

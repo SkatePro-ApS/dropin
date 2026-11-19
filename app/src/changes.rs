@@ -27,10 +27,25 @@ pub async fn working_diff(app: AppHandle, name: String, file: dropin_git::FileCh
 
 /// Commits the ticked files, holding the repo so no push or rebase runs meanwhile.
 #[tauri::command]
-pub async fn commit(app: AppHandle, name: String, message: String, files: Vec<dropin_git::FileChange>, amend: bool) -> Result<dropin_git::Committed, String> {
+pub async fn commit(
+    app: AppHandle,
+    name: String,
+    message: String,
+    files: Vec<dropin_git::FileChange>,
+    parts: Option<Vec<dropin_git::Part>>,
+    amend: bool,
+) -> Result<dropin_git::Committed, String> {
     let repo = repo_named(&app, &name)?;
     let _held = pipe::hold(&app, &repo, "commit")?;
-    pipe::blocking(move || dropin_git::commit_changes(Path::new(&repo.path), &message, &files, amend)).await
+    let parts = parts.unwrap_or_default();
+    pipe::blocking(move || dropin_git::commit_parts(Path::new(&repo.path), &message, &files, &parts, amend)).await
+}
+
+/// A modified file's hunks, for splitting its changes between changelists.
+#[tauri::command]
+pub async fn work_hunks(app: AppHandle, name: String, file: dropin_git::FileChange) -> Result<Vec<dropin_git::Hunk>, String> {
+    let repo = repo_named(&app, &name)?;
+    pipe::blocking(move || dropin_git::file_hunks(Path::new(&repo.path), &file)).await
 }
 
 /// Rolls the files back to HEAD; the page asked first.

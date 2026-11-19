@@ -13,7 +13,7 @@ use crate::run::*;
 /// git's tree with nothing in it: what a repo without a commit compares with.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// A commit runs the repo's hooks, which can take a while.
-const COMMIT: Duration = Duration::from_secs(180);
+pub(crate) const COMMIT: Duration = Duration::from_secs(180);
 /// The biggest image a preview reads.
 pub const IMAGE_CAP: usize = 25 * 1024 * 1024;
 
@@ -108,7 +108,7 @@ pub fn working_diff(dir: &Path, file: &FileChange) -> Result<(String, bool), Str
 }
 
 /// NUL-separated paths, as `--pathspec-from-file=- --pathspec-file-nul` reads them.
-fn nul_list(paths: &[&str]) -> String {
+pub(crate) fn nul_list(paths: &[&str]) -> String {
     paths.iter().map(|p| format!("{p}\0")).collect()
 }
 
@@ -202,7 +202,7 @@ pub fn commit_changes(dir: &Path, message: &str, files: &[FileChange], amend: bo
 }
 
 /// The message in a file of its own, so any text (a leading `-`, many lines) reaches git as written.
-fn message_file(message: &str) -> Result<PathBuf, String> {
+pub(crate) fn message_file(message: &str) -> Result<PathBuf, String> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let path = std::env::temp_dir().join(format!("dropin-commit-{}-{stamp}.txt", std::process::id()));
     std::fs::write(&path, message).map_err(|e| format!("could not write the message to {}: {e}", path.display()))?;

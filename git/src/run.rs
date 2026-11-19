@@ -54,7 +54,7 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<Ran, String> {
 /// read never fights the person's own git (or another Claude session) for index.lock.
 /// Err only when git could not start or ran past `timeout`; a failing git is `Ok` with its code.
 pub fn git_with(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&str>) -> Result<Ran, String> {
-    let (code, stdout, stderr, truncated) = run(dir, args, timeout, stdin, STDOUT_CAP)?;
+    let (code, stdout, stderr, truncated) = run(dir, args, timeout, stdin.map(str::as_bytes), STDOUT_CAP, &[])?;
     Ok(Ran {
         code,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
@@ -66,7 +66,7 @@ pub fn git_with(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&str
 /// git's stdout as bytes (a blob, an image), or an error naming the step. More than `cap` bytes
 /// is an error: a cut image is no image.
 pub fn git_bytes(dir: &Path, args: &[&str], cap: usize, what: &str) -> Result<Vec<u8>, String> {
-    let (code, stdout, stderr, truncated) = run(dir, args, DEFAULT_TIMEOUT, None, cap)?;
+    let (code, stdout, stderr, truncated) = run(dir, args, DEFAULT_TIMEOUT, None, cap, &[])?;
     if code != 0 {
         let said = tail(&String::from_utf8_lossy(&stderr), 4);
         return Err(format!("{what} failed: {}", if said.is_empty() { format!("exit {code}") } else { said }));
@@ -77,7 +77,7 @@ pub fn git_bytes(dir: &Path, args: &[&str], cap: usize, what: &str) -> Result<Ve
     Ok(stdout)
 }
 
-fn run(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&str>, cap: usize) -> Result<(i32, Vec<u8>, Vec<u8>, bool), String> {
+fn run(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&[u8]>, cap: usize, env: &[(&str, &str)]) -> Result<(i32, Vec<u8>, Vec<u8>, bool), String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
@@ -85,6 +85,7 @@ fn run(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&str>, cap: u
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied())
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -92,9 +93,9 @@ fn run(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&str>, cap: u
     cmd.creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn().map_err(|e| format!("git could not start: {e}"))?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        let text = text.to_owned();
+        let text = text.to_vec();
         std::thread::spawn(move || {
-            let _ = pipe.write_all(text.as_bytes());
+            let _ = pipe.write_all(&text);
         });
     }
     // Both pipes drain on their own threads, so a chatty git never blocks on a full pipe.
@@ -129,5 +130,17 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>, cap: usize) -> JoinHandle<(V
             }
         }
         (kept, truncated)
+    })
+}
+
+/// Runs git in `dir` with extra environment (a separate GIT_INDEX_FILE) and bytes on stdin, which
+/// may be any encoding: a blob is written exactly as it is.
+pub fn git_env(dir: &Path, args: &[&str], timeout: Duration, stdin: Option<&[u8]>, env: &[(&str, &str)]) -> Result<Ran, String> {
+    let (code, stdout, stderr, truncated) = run(dir, args, timeout, stdin, STDOUT_CAP, env)?;
+    Ok(Ran {
+        code,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        truncated,
     })
 }

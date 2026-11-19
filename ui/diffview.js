@@ -80,9 +80,10 @@ export class DiffView {
    * @param {Function} o.layout  'split' or 'unified'
    * @param {Function} o.pick  `(path, landing)`: F7 past a file's edge opens that file of the commit,
    *                            landing on its 'first' or 'last' change
+   * @param {Function} [o.decorate]  `(target, file, changes)` after a file is drawn: each change's rows
    */
-  constructor({ invoke, title, body, hint, layout, pick }) {
-    Object.assign(this, { invoke, title, body, hint, layout, pick });
+  constructor({ invoke, title, body, hint, layout, pick, decorate }) {
+    Object.assign(this, { invoke, title, body, hint, layout, pick, decorate });
     this.target = null;
     this.fileKey = null;
     this.drawnKey = null;
@@ -157,6 +158,7 @@ export class DiffView {
         const drawn = this.layout() === 'split' ? splitTable(shaped.rows, lang) : unifiedTable(shaped.rows, lang);
         this.body.append(drawn.node);
         this.changes = drawn.changes;
+        this.decorate?.(target, file, drawn.changes);
       } else {
         this.body.append(el('div', 'diff-note', shaped.note ?? 'No text changes to show.'));
       }

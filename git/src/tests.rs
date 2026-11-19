@@ -919,3 +919,85 @@ fn revert_refuses_a_clash_with_later_commits() {
     assert_eq!(head(&r.b), before);
     assert_eq!(head(&r.a), before);
 }
+
+// ---- partial changelists ----
+
+fn bytes_at(dir: &Path, rev_path: &str) -> Vec<u8> {
+    git_bytes(dir, &["cat-file", "blob", rev_path], 1 << 20, "cat-file").unwrap()
+}
+
+fn modified(path: &str) -> FileChange {
+    FileChange { status: "M".into(), path: path.into(), from: None }
+}
+
+#[test]
+fn hunk_heads_and_ids() {
+    let r = repos();
+    let ten: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+    commit(&r.a, "f.txt", &ten, "Ten");
+    write(&r.a, "f.txt", &ten.replace("l2\n", "L2\n").replace("l5\n", "").replace("l9\n", "l9\nnew\n"));
+    let h = file_hunks(&r.a, &modified("f.txt")).unwrap();
+    let heads: Vec<_> = h.iter().map(|h| (h.old_start, h.old_lines, h.new_start, h.new_lines)).collect();
+    assert_eq!(heads, [(2, 1, 2, 1), (5, 1, 4, 0), (9, 0, 9, 1)]);
+    // An edit elsewhere moves a hunk but keeps its id.
+    write(&r.a, "f.txt", &format!("top\n{}", ten.replace("l2\n", "L2\n").replace("l5\n", "").replace("l9\n", "l9\nnew\n")));
+    let moved = file_hunks(&r.a, &modified("f.txt")).unwrap();
+    assert_eq!(moved.len(), 4);
+    assert_eq!(moved[1].id, h[0].id);
+    assert_eq!(moved[3].id, h[2].id);
+    assert_eq!(moved[3].new_start, 10);
+    // Only a modified file splits.
+    assert!(file_hunks(&r.a, &FileChange { status: "?".into(), path: "x".into(), from: None }).unwrap().is_empty());
+}
+
+#[test]
+fn commit_parts_takes_only_the_picked_hunks() {
+    let r = repos();
+    let ten: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+    commit(&r.a, "f.txt", &ten, "Ten");
+    let edited = ten.replace("l2\n", "L2\n").replace("l5\n", "").replace("l9\n", "l9\nnew\n");
+    write(&r.a, "f.txt", &edited);
+    write(&r.a, "other.txt", "whole\n");
+    write(&r.a, "staged.txt", "staged\n");
+    sh(&r.a, &["add", "staged.txt"]);
+    let h = file_hunks(&r.a, &modified("f.txt")).unwrap();
+
+    // The first and last hunk go in, with an untracked file whole; the middle one stays.
+    let parts = [Part { path: "f.txt".into(), hunks: vec![h[0].id.clone(), h[2].id.clone()] }];
+    let other = FileChange { status: "?".into(), path: "other.txt".into(), from: None };
+    let done = commit_parts(&r.a, "Some of it", &[modified("f.txt"), other], &parts, false).unwrap();
+    assert_eq!(done.subject, "Some of it");
+    let want = ten.replace("l2\n", "L2\n").replace("l9\n", "l9\nnew\n");
+    assert_eq!(bytes_at(&r.a, "HEAD:f.txt"), want.as_bytes());
+    assert_eq!(bytes_at(&r.a, "HEAD:other.txt"), b"whole\n");
+    // The work tree is as it was; only the middle hunk is still a change, and nothing is staged
+    // but what was staged before.
+    assert_eq!(std::fs::read(r.a.join("f.txt")).unwrap(), edited.as_bytes());
+    let left = file_hunks(&r.a, &modified("f.txt")).unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].id, h[1].id);
+    assert_eq!(sh(&r.a, &["diff", "--cached", "--name-only"]).trim(), "staged.txt");
+    let names: Vec<String> = files_of(&r.a, &done.sha).unwrap().into_iter().map(|f| f.path).collect();
+    assert_eq!(names, ["f.txt", "other.txt"]);
+
+    // A hunk that is gone is refused, and nothing is committed.
+    let before = head(&r.a);
+    let err = commit_parts(&r.a, "Stale", &[modified("f.txt")], &[Part { path: "f.txt".into(), hunks: vec![h[0].id.clone()] }], false).unwrap_err();
+    assert!(err.contains("not there any more"), "{err}");
+    assert_eq!(head(&r.a), before);
+}
+
+#[test]
+fn commit_parts_keeps_bytes_and_line_endings() {
+    let r = repos();
+    // latin1 bytes and CRLF lines: git's diff text would mangle both.
+    let old: &[u8] = b"r\xf8d\r\nmid\r\nbl\xe5\r\n";
+    std::fs::write(r.a.join("l1.txt"), old).unwrap();
+    sh(&r.a, &["add", "l1.txt"]);
+    sh(&r.a, &["commit", "-q", "-m", "latin1"]);
+    std::fs::write(r.a.join("l1.txt"), b"R\xd8D\r\nmid\r\nBL\xc5\r\n").unwrap();
+    let h = file_hunks(&r.a, &modified("l1.txt")).unwrap();
+    assert_eq!(h.len(), 2);
+    commit_parts(&r.a, "First", &[modified("l1.txt")], &[Part { path: "l1.txt".into(), hunks: vec![h[1].id.clone()] }], false).unwrap();
+    assert_eq!(bytes_at(&r.a, "HEAD:l1.txt"), b"r\xf8d\r\nmid\r\nBL\xc5\r\n");
+}

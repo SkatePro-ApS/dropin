@@ -4,6 +4,7 @@
 mod branches;
 mod changes;
 mod ops;
+mod partial;
 mod parse;
 mod pushed;
 mod revert;
@@ -14,6 +15,7 @@ mod status;
 pub use branches::*;
 pub use changes::*;
 pub use ops::*;
+pub use partial::*;
 pub use parse::*;
 pub use pushed::*;
 pub use revert::*;

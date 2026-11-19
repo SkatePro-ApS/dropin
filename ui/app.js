@@ -96,6 +96,11 @@ function view(name) {
       // Paths ticked for the next commit, and every path listed so far (a new one gets its default tick).
       ticked: new Set(),
       seen: new Set(),
+      // The hunks of files split between changelists (path → hunks), read with the changes.
+      hunks: new Map(),
+      // Files picked together (Ctrl/Shift+click) by row key, and where a Shift range starts.
+      picked: new Set(),
+      anchor: null,
       // Commits to push the person holds back: the push leaves them out.
       held: new Set(),
       draft: '',
@@ -165,6 +170,186 @@ async function read(name, fetch = false) {
 }
 
 /**
+ * A repo's changelists, kept in ui.json: named lists of tracked files, as in PhpStorm. `files` maps
+ * a path to its list's id; `active` is where new changes land. A repo without any has one list.
+ */
+function changelists(name) {
+  const cl = saved.get(`changelists:${name}`, null);
+  if (cl && Array.isArray(cl.lists) && cl.lists.length) {
+    cl.parts ??= {};
+    return cl;
+  }
+  return { lists: [{ id: 'default', name: 'Changes' }], active: 'default', files: {}, parts: {} };
+}
+
+/** Each list's colour: its dot in the tree and on its changes in the diff. */
+const LIST_COLOURS = ['#4a8fd6', '#d9714a', '#5f8f4e', '#c76394', '#c9a227', '#8c74c9', '#4f9a8f'];
+function listColour(cl, id) {
+  const i = cl.lists.findIndex(l => l.id === id);
+  return LIST_COLOURS[Math.max(0, i) % LIST_COLOURS.length];
+}
+
+/** What the tick set holds for a row: the path, or path and list for one list's part of a split file. */
+const tickKey = f => f.tickKey ?? f.path;
+
+/**
+ * A split file keeps `parts[path]` (hunk id → list) for the hunks moved out of its own list;
+ * the rest stay in the file's list.
+ */
+function hunkList(cl, path, id) {
+  return cl.parts[path]?.[id] ?? listOf(cl, path);
+}
+
+/** The lists a split file's hunks are in, or null for a file that sits whole in one list. */
+function partsOf(v, cl, path) {
+  const hunks = v.hunks.get(path);
+  if (!cl.parts[path] || !hunks) return null;
+  const ids = [...new Set(hunks.map(h => hunkList(cl, path, h.id)))];
+  return ids.length > 1 ? ids : null;
+}
+
+/** Forgets hunks that are gone, and makes a file whole again once all its hunks share one list. */
+function settleParts(v, cl, path) {
+  const map = cl.parts[path];
+  const hunks = v.hunks.get(path);
+  if (!map || !hunks) return;
+  for (const id of Object.keys(map)) {
+    if (!hunks.some(h => h.id === id) || !cl.lists.some(l => l.id === map[id])) delete map[id];
+  }
+  const lists = new Set(hunks.map(h => hunkList(cl, path, h.id)));
+  if (lists.size > 1) return;
+  if (lists.size === 1) cl.files[path] = [...lists][0];
+  delete cl.parts[path];
+}
+
+/** Moves one hunk of a file to a list; the file shows in each list that has some of its hunks. */
+function assignHunk(path, id, list) {
+  const v = view(current);
+  const cl = changelists(current);
+  cl.parts[path] ??= {};
+  cl.parts[path][id] = list;
+  settleParts(v, cl, path);
+  saveChangelists(current, cl);
+  renderTree();
+  updateComposer();
+}
+
+function saveChangelists(name, cl) {
+  saved.set(`changelists:${name}`, cl);
+}
+
+/** The list a tracked file is in: its own, or the active one when it has none (yet). */
+function listOf(cl, path) {
+  const id = cl.files[path];
+  return cl.lists.some(l => l.id === id) ? id : cl.active;
+}
+
+/** Moves files (untracked ones stay in Unversioned) into a list. */
+function moveToList(files, id) {
+  const v = view(current);
+  const cl = changelists(current);
+  for (const f of files) {
+    if (f.status === '?') continue;
+    if (f.part) {
+      // One list's part of a split file: just its hunks move.
+      for (const h of v.hunks.get(f.path) ?? []) {
+        if (hunkList(cl, f.path, h.id) === f.part) (cl.parts[f.path] ??= {})[h.id] = id;
+      }
+      settleParts(v, cl, f.path);
+    } else {
+      cl.files[f.path] = id;
+      delete cl.parts[f.path];
+    }
+  }
+  saveChangelists(current, cl);
+  renderTree();
+  updateComposer();
+}
+
+/** Asks for a name, makes the list, and moves `files` into it. */
+async function newList(files = []) {
+  await ask({
+    title: 'New changelist',
+    input: '',
+    placeholder: 'Name',
+    ok: 'Create',
+    run: async value => {
+      const cl = changelists(current);
+      const name = value.trim();
+      if (cl.lists.some(l => l.name.toLowerCase() === name.toLowerCase())) return { tone: 'error', text: `There is a list called ${name} already.` };
+      const id = `l${Date.now().toString(36)}`;
+      cl.lists.push({ id, name });
+      for (const f of files) if (f.status !== '?') cl.files[f.path] = id;
+      saveChangelists(current, cl);
+      renderTree();
+      return null;
+    },
+  });
+  $('tree').focus({ preventScroll: true });
+}
+
+async function renameList(id) {
+  const cl = changelists(current);
+  const list = cl.lists.find(l => l.id === id);
+  if (!list) return;
+  await ask({
+    title: `Rename ${list.name}`,
+    input: list.name,
+    ok: 'Rename',
+    run: async value => {
+      const name = value.trim();
+      if (cl.lists.some(l => l.id !== id && l.name.toLowerCase() === name.toLowerCase())) return { tone: 'error', text: `There is a list called ${name} already.` };
+      list.name = name;
+      saveChangelists(current, cl);
+      renderTree();
+      return null;
+    },
+  });
+  $('tree').focus({ preventScroll: true });
+}
+
+/** Deletes a list; its files go to the active list (or the first left, when it was the active one). */
+async function deleteList(id) {
+  const cl = changelists(current);
+  const list = cl.lists.find(l => l.id === id);
+  if (!list || cl.lists.length < 2) return;
+  const rest = cl.lists.filter(l => l.id !== id);
+  const to = id === cl.active ? rest[0] : rest.find(l => l.id === cl.active);
+  const count = Object.values(cl.files).filter(x => x === id).length;
+  await ask({
+    title: `Delete ${list.name}?`,
+    text: count ? `Its ${plural(count, 'file')} move to ${to.name}. The files themselves are not touched.` : 'The list is empty.',
+    ok: 'Delete',
+    danger: true,
+    run: async () => {
+      for (const [path, x] of Object.entries(cl.files)) if (x === id) cl.files[path] = to.id;
+      for (const map of Object.values(cl.parts)) for (const [h, x] of Object.entries(map)) if (x === id) map[h] = to.id;
+      cl.lists = rest;
+      if (cl.active === id) cl.active = to.id;
+      saveChangelists(current, cl);
+      renderTree();
+      return null;
+    },
+  });
+  $('tree').focus({ preventScroll: true });
+}
+
+function setActiveList(id) {
+  const cl = changelists(current);
+  cl.active = id;
+  saveChangelists(current, cl);
+  renderTree();
+}
+
+/** Ticks exactly one list's files, so the next commit is that list. */
+function tickOnlyList(v, files) {
+  v.ticked.clear();
+  for (const f of files) v.ticked.add(tickKey(f));
+  renderTree();
+  updateComposer();
+}
+
+/**
  * Reads the work tree's uncommitted changes. A file listed for the first time starts ticked when
  * git tracks it, as in PhpStorm; a new file waits to be ticked, so a stray one is not committed.
  */
@@ -175,16 +360,36 @@ async function readWork(name) {
     const work = await api.invoke('changes', { name });
     if (token !== v.workToken) return;
     const now = new Set(work.files.map(f => f.path));
+    // Split files' hunks, read again with each read: edits move them, a commit takes some.
+    const splitFiles = work.files.filter(f => f.status === 'M' && changelists(name).parts[f.path]);
+    const hunks = await Promise.all(splitFiles.map(file => api.invoke('work_hunks', { name, file }).catch(() => null)));
+    if (token !== v.workToken) return;
+    const cl = changelists(name);
+    const before = JSON.stringify(cl);
+    v.hunks = new Map();
+    splitFiles.forEach((f, i) => hunks[i] && v.hunks.set(f.path, hunks[i]));
     for (const f of work.files) {
       if (v.seen.has(f.path)) continue;
       v.seen.add(f.path);
-      if (f.status !== '?') v.ticked.add(f.path);
+      if (f.status === '?') continue;
+      // A new change lands in the active list; only the active list's files start ticked, as in PhpStorm.
+      if (!cl.lists.some(l => l.id === cl.files[f.path])) cl.files[f.path] = cl.active;
+      if (cl.files[f.path] === cl.active) v.ticked.add(f.path);
     }
     for (const path of [...v.seen]) {
       if (now.has(path)) continue;
       v.seen.delete(path);
       v.ticked.delete(path);
+      for (const key of [...v.ticked]) if (key.startsWith(`${path}\n`)) v.ticked.delete(key);
     }
+    // A committed or rolled-back file leaves its list; a split file that can no longer split is whole.
+    const tracked = new Set(work.files.filter(f => f.status !== '?').map(f => f.path));
+    for (const path of Object.keys(cl.files)) if (!tracked.has(path)) delete cl.files[path];
+    for (const path of Object.keys(cl.parts)) {
+      if (!splitFiles.some(f => f.path === path)) delete cl.parts[path];
+      else settleParts(v, cl, path);
+    }
+    if (JSON.stringify(cl) !== before) saveChangelists(name, cl);
     v.work = work;
     v.workError = null;
   } catch (error) {
@@ -226,7 +431,29 @@ function rowOrder(v) {
 
 /** The uncommitted files ticked for the next commit, in the list's order. */
 function tickedFiles(v) {
-  return (v.work?.files ?? []).filter(f => v.ticked.has(f.path));
+  return workGroups(v, v.work?.files ?? []).flatMap(g => g.files).filter(f => v.ticked.has(tickKey(f)));
+}
+
+/**
+ * What the commit takes: whole files, and for a split file whose lists are not all ticked, the
+ * hunks of the ticked lists only.
+ */
+function commitPayload(v) {
+  const cl = changelists(current);
+  const picked = tickedFiles(v);
+  const files = [];
+  const parts = [];
+  for (const f of picked) {
+    if (files.some(x => x.path === f.path)) continue;
+    const { tickKey: _key, part: _part, ...plain } = f;
+    files.push(plain);
+    if (!f.part) continue;
+    const lists = new Set(picked.filter(x => x.path === f.path).map(x => x.part));
+    const hunks = v.hunks.get(f.path) ?? [];
+    const ids = hunks.filter(h => lists.has(hunkList(cl, f.path, h.id))).map(h => h.id);
+    if (ids.length < hunks.length) parts.push({ path: f.path, hunks: ids });
+  }
+  return { files, parts };
 }
 
 async function loadFiles() {
@@ -1228,12 +1455,20 @@ const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 
  * The Uncommitted row's file groups, as PhpStorm's commit view has them: changes to tracked files,
  * then files git does not track yet. Empty groups are left out.
  */
-function workGroups(v) {
-  const files = v.files ?? [];
+function workGroups(v, files = v.files ?? []) {
+  const cl = changelists(current);
+  const tracked = files.filter(f => f.status !== '?');
+  // A split file shows in each list that has some of its hunks, as that list's part.
+  const inList = l => tracked.flatMap(f => {
+    const parts = partsOf(v, cl, f.path);
+    if (parts) return parts.includes(l.id) ? [{ ...f, part: l.id, tickKey: `${f.path}\n${l.id}` }] : [];
+    return listOf(cl, f.path) === l.id ? [f] : [];
+  });
+  // Every list shows, empty or not, so files can be dropped on it; Unversioned only when it has files.
   return [
-    { id: 'c', label: 'Changes', files: files.filter(f => f.status !== '?') },
+    ...cl.lists.map(l => ({ id: `l-${l.id}`, list: l.id, label: l.name, active: l.id === cl.active, colour: listColour(cl, l.id), files: inList(l) })),
     { id: 'u', label: 'Unversioned files', files: files.filter(f => f.status === '?') },
-  ].filter(g => g.files.length);
+  ].filter(g => g.list || g.files.length);
 }
 
 /**
@@ -1262,10 +1497,23 @@ function visibleRows(v) {
   const rows = [];
   for (const group of workGroups(v)) {
     const id = `g:${group.id}`;
-    rows.push({ kind: 'group', key: id, id, group, depth: 0 });
-    if (!v.closed.has(id)) rows.push(...treeRows(v, group.files, `${group.id}:`, 1));
+    rows.push({ kind: 'group', key: id, id, group, list: group.list, depth: 0 });
+    if (!v.closed.has(id)) {
+      for (const file of flatOrder(group.files)) {
+        rows.push({ kind: 'file', key: `f:${tickKey(file)}`, file, name: baseName(file.path), folder: dirName(file.path), depth: 1, list: group.list });
+      }
+    }
   }
   return rows;
+}
+
+const baseName = path => path.slice(path.lastIndexOf('/') + 1);
+const dirName = path => path.slice(0, Math.max(0, path.lastIndexOf('/')));
+
+/** A changelist's files as PhpStorm lists them: one flat list by file name, then folder. */
+function flatOrder(files) {
+  const name = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+  return [...files].sort((a, b) => name(baseName(a.path), baseName(b.path)) || name(a.path, b.path));
 }
 
 /** A tree's files in drawing order, closed folders included. */
@@ -1282,12 +1530,13 @@ function filesInOrder(files) {
 /** Every file in drawing order, closed folders included: what Alt+↑/↓ steps through. */
 function visibleFiles(v) {
   if (v.sel !== WORK) return filesInOrder(v.files ?? []);
-  return workGroups(v).flatMap(group => filesInOrder(group.files));
+  return workGroups(v).flatMap(group => flatOrder(group.files));
 }
 
 /** The files a tree row stands for: itself, everything under a folder, or a whole group. */
 function rowFiles(row) {
   if (row.kind === 'file') return [row.file];
+  if (row.kind === 'pick') return row.files;
   if (row.kind === 'group') return row.group.files;
   const all = [];
   const walk = dir => {
@@ -1301,10 +1550,10 @@ function rowFiles(row) {
 /** Ticks a row's files, or unticks them when all are ticked already. */
 function toggleTick(v, row) {
   const files = rowFiles(row);
-  const all = files.every(f => v.ticked.has(f.path));
+  const all = files.every(f => v.ticked.has(tickKey(f)));
   for (const f of files) {
-    if (all) v.ticked.delete(f.path);
-    else v.ticked.add(f.path);
+    if (all) v.ticked.delete(tickKey(f));
+    else v.ticked.add(tickKey(f));
   }
   renderTree();
   updateComposer();
@@ -1358,7 +1607,7 @@ const statusClass = status => (status === '?' ? 'Q' : status);
 /** A row's tick box: ticked, unticked, or part-ticked for a folder or group. */
 function tickBox(v, row) {
   const files = rowFiles(row);
-  const ticked = files.filter(f => v.ticked.has(f.path)).length;
+  const ticked = files.filter(f => v.ticked.has(tickKey(f))).length;
   const box = el('input', 'tick');
   box.type = 'checkbox';
   box.tabIndex = -1;
@@ -1388,6 +1637,7 @@ function renderTree() {
   const work = v.sel === WORK;
   $('detail').classList.toggle('working', work);
   $('rollback').hidden = !work;
+  $('new-list').hidden = !work;
   if (!v.sel) return;
   if (v.filesError) {
     tree.append(el('div', 'empty', v.filesError));
@@ -1408,7 +1658,14 @@ function renderTree() {
     if (row.kind === 'group') {
       if (v.closed.has(row.id)) node.classList.add('closed');
       node.innerHTML = CHEVRON;
-      node.append(tickBox(v, row), el('span', 'name', row.group.label), el('span', 'count', plural(row.group.files.length, 'file')));
+      node.append(tickBox(v, row));
+      if (row.group.colour) {
+        const dot = el('span', 'list-dot');
+        dot.style.background = row.group.colour;
+        node.append(dot);
+      }
+      node.append(el('span', 'name', row.group.label), el('span', 'count', plural(row.group.files.length, 'file')));
+      if (row.group.active) node.append(el('span', 'active-list', 'active'));
       node.onclick = () => {
         v.cursor = row.key;
         toggleDir(v, row.id);
@@ -1430,12 +1687,154 @@ function renderTree() {
       node.title = `${row.file.path} (${STATUS_WORD[status] ?? row.file.status})`;
       if (work) node.append(tickBox(v, row));
       node.append(kindBadge(row.name), el('span', 'name', row.name));
+      if (row.file.part) {
+        const mark = el('span', 'part-mark', 'part');
+        mark.title = 'Some of this file\'s changes are in another list. Open the diff to move them.';
+        node.append(mark);
+      }
+      if (row.folder) node.append(el('span', 'from', row.folder));
       if (row.file.from) node.append(el('span', 'from', `from ${row.file.from}`));
-      node.onclick = () => openFile(row.file.path);
+      // As in PhpStorm: a click selects the file, a double-click opens its diff.
+      // Marked in place, not redrawn, so the second click of a double-click lands on the same node.
+      // Ctrl+click adds or removes a file, Shift+click picks the range, as in PhpStorm.
+      node.onclick = event => pickRow(v, row, event);
+      node.ondblclick = () => openFile(row.file.path, null, row.key);
     }
     if (row.key === v.cursor) node.classList.add('selected');
+    if (v.picked.has(row.key)) node.classList.add('picked');
+    if (work && row.list) dragAndDrop(node, row);
     tree.append(node);
   }
+}
+
+/**
+ * An uncommitted file's diff: each change gets a dot in its list's colour, and a click on it moves
+ * that change to another list, as PhpStorm's gutter does. The diff's changes are git's -U0 hunks
+ * in the same order; when the counts differ (a diff cut short), no dots are drawn.
+ */
+async function decorateDiff(target, file, changes) {
+  if (target.sha !== WORK || file.status !== 'M' || !changes.length) return;
+  const name = target.name;
+  if (changelists(name).lists.length < 2) return;
+  let hunks;
+  try {
+    hunks = await api.invoke('work_hunks', { name, file });
+  } catch {
+    return;
+  }
+  if (name !== current || hunks.length !== changes.length || !changes[0][0]?.isConnected) return;
+  view(name).hunks.set(file.path, hunks);
+  const paint = () => {
+    const cl = changelists(name);
+    dots.forEach((dot, i) => {
+      const id = hunkList(cl, file.path, hunks[i].id);
+      dot.style.background = listColour(cl, id);
+      dot.title = `In ${cl.lists.find(l => l.id === id)?.name ?? 'a list'}. Click to move this change to another list.`;
+    });
+  };
+  const dots = changes.map((rows, i) => {
+    const dot = el('button', 'hunk-list');
+    dot.type = 'button';
+    dot.onclick = event => {
+      event.stopPropagation();
+      const cl = changelists(name);
+      const items = cl.lists.map(l => ({
+        label: l.name,
+        checked: hunkList(cl, file.path, hunks[i].id) === l.id,
+        run: () => {
+          assignHunk(file.path, hunks[i].id, l.id);
+          paint();
+        },
+      }));
+      openMenu(event.clientX, event.clientY, items, $('diff-body'));
+    };
+    rows[0].firstElementChild?.prepend(dot);
+    return dot;
+  });
+  paint();
+}
+
+/** Picks a file row from a click: alone, added or removed with Ctrl, or a range with Shift. */
+function pickRow(v, row, event) {
+  const rows = visibleRows(v);
+  if (event.shiftKey && v.anchor) {
+    pickRange(v, rows, v.anchor, row.key, event.ctrlKey);
+  } else if (event.ctrlKey || event.metaKey) {
+    // The first Ctrl+click keeps the file picked before it.
+    const before = rows.find(r => r.key === v.cursor);
+    if (!v.picked.size && before?.kind === 'file') v.picked.add(before.key);
+    if (v.picked.has(row.key)) v.picked.delete(row.key);
+    else v.picked.add(row.key);
+    v.anchor = row.key;
+  } else {
+    v.picked.clear();
+    v.anchor = row.key;
+  }
+  v.cursor = row.key;
+  paintPicks(v);
+  $('tree').focus({ preventScroll: true });
+}
+
+/** Picks the file rows from `from` to `to`; with `add`, on top of what is picked already. */
+function pickRange(v, rows, from, to, add = false) {
+  const a = rows.findIndex(r => r.key === from);
+  const b = rows.findIndex(r => r.key === to);
+  if (a < 0 || b < 0) return;
+  if (!add) v.picked.clear();
+  for (const r of rows.slice(Math.min(a, b), Math.max(a, b) + 1)) if (r.kind === 'file') v.picked.add(r.key);
+}
+
+/** Marks the cursor and picks in place, not redrawn, so a double-click's second click lands on the same node. */
+function paintPicks(v) {
+  for (const n of $('tree').querySelectorAll('.node')) {
+    n.classList.toggle('selected', n.dataset.key === v.cursor);
+    n.classList.toggle('picked', v.picked.has(n.dataset.key));
+  }
+}
+
+/** The row a menu, Space or a drag acts on: all picked files when `row` is one of several picked. */
+function pickedRow(v, row) {
+  if (v.picked.size < 2 || !v.picked.has(row.key)) return row;
+  const rows = visibleRows(v).filter(r => v.picked.has(r.key));
+  const lists = new Set(rows.map(r => r.list));
+  return { kind: 'pick', key: row.key, files: rows.map(r => r.file), list: lists.size === 1 ? rows[0].list : undefined };
+}
+
+/** The files being dragged between changelists, or null. */
+let dragging = null;
+
+/** Lets a list's file or folder rows be dragged, and any row of a list take a drop into that list. */
+function dragAndDrop(node, row) {
+  node.dataset.list = row.list;
+  const mark = id => {
+    for (const n of $('tree').querySelectorAll('.node.group.drop')) if (n.dataset.list !== id) n.classList.remove('drop');
+    if (id) $('tree').querySelector(`.node.group[data-list="${CSS.escape(id)}"]`)?.classList.add('drop');
+  };
+  if (row.kind !== 'group') {
+    node.draggable = true;
+    node.ondragstart = event => {
+      dragging = rowFiles(pickedRow(view(current), row));
+      event.dataTransfer.setData('text/plain', dragging.map(f => f.path).join('\n'));
+      event.dataTransfer.effectAllowed = 'move';
+    };
+    node.ondragend = () => {
+      dragging = null;
+      mark(null);
+    };
+  }
+  node.ondragover = event => {
+    if (!dragging) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    mark(row.list);
+  };
+  node.ondrop = event => {
+    if (!dragging) return;
+    event.preventDefault();
+    const files = dragging;
+    dragging = null;
+    moveToList(files, row.list);
+  };
 }
 
 /** Opens or closes a folder or group by its `id`. */
@@ -1447,10 +1846,10 @@ function toggleDir(v, id, open) {
   renderTree();
 }
 
-function openFile(path, landing = null) {
+function openFile(path, landing = null, key = `f:${path}`) {
   const v = view(current);
   v.file = path;
-  v.cursor = `f:${path}`;
+  v.cursor = key;
   v.diffOpen = true;
   renderTree();
   renderDiff(landing);
@@ -1615,8 +2014,11 @@ async function commitWork(andPush) {
   progress(+1);
   renderAll();
   let made = null;
+  // The lists this commit takes files from: any it leaves empty is offered for deletion after.
+  const clBefore = changelists(name);
+  const used = new Set(tickedFiles(v).filter(f => f.status !== '?').map(f => f.part ?? listOf(clBefore, f.path)));
   try {
-    made = await api.invoke('commit', { name, message: v.draft, files: tickedFiles(v), amend: amending });
+    made = await api.invoke('commit', { name, message: v.draft, ...commitPayload(v), amend: amending });
     v.notice = { tone: 'success', text: `${amending ? 'Amended' : 'Committed'} ${made.short}: ${made.subject}` };
     v.draft = '';
     v.amendSaved = '';
@@ -1627,14 +2029,52 @@ async function commitWork(andPush) {
   v.busy = null;
   progress(-1);
   await read(name, false);
-  if (!made || !andPush) return;
-  const blocker = pushBlocker(v);
-  if (blocker) {
-    v.notice = { tone: 'warning', text: `${amending ? 'Amended' : 'Committed'} ${made.short}, but did not push: ${blocker}.` };
-    if (name === current) renderAlerts();
+  if (!made) return;
+  if (andPush) {
+    const blocker = pushBlocker(v);
+    if (blocker) {
+      v.notice = { tone: 'warning', text: `${amending ? 'Amended' : 'Committed'} ${made.short}, but did not push: ${blocker}.` };
+      if (name === current) renderAlerts();
+    } else if (name === current) {
+      await push();
+    }
+  }
+  if (name === current) await offerEmptyLists(used);
+}
+
+/**
+ * After a commit, as PhpStorm does: a list the commit emptied is offered for deletion, or deleted
+ * at once once the person said so. The active list stays, and so does the last one.
+ */
+async function offerEmptyLists(used) {
+  const v = view(current);
+  const cl = changelists(current);
+  const groups = workGroups(v, v.work?.files ?? []);
+  const empty = cl.lists.filter(l => used.has(l.id) && l.id !== cl.active && !groups.some(g => g.list === l.id && g.files.length));
+  if (!empty.length || empty.length >= cl.lists.length) return;
+  const drop = () => {
+    const now = changelists(current);
+    now.lists = now.lists.filter(l => !empty.some(e => e.id === l.id));
+    saveChangelists(current, now);
+    renderTree();
+  };
+  if (saved.get('changelists.deleteEmpty', false)) {
+    drop();
     return;
   }
-  if (name === current) await push();
+  const names = empty.map(l => l.name).join(', ');
+  await ask({
+    title: empty.length === 1 ? `Delete the empty list ${names}?` : `Delete ${empty.length} empty lists?`,
+    text: empty.length === 1 ? 'The commit took all its files.' : `The commit took all the files of ${names}.`,
+    check: { label: 'Always delete lists a commit empties, without asking', checked: false },
+    ok: 'Delete',
+    run: async (_value, always) => {
+      if (always) saved.set('changelists.deleteEmpty', true);
+      drop();
+      return null;
+    },
+  });
+  $('tree').focus({ preventScroll: true });
 }
 
 /** Rolls `files` back to HEAD after asking; unversioned files among them are deleted. */
@@ -1643,6 +2083,14 @@ async function rollbackFiles(files) {
   if (!name || !files.length) return;
   const v = view(name);
   if (v.busy) return;
+  // A split file rolls back only whole: every list's part of it picked.
+  const cl = changelists(name);
+  const half = files.find(f => f.part && partsOf(v, cl, f.path)?.some(l => !files.some(x => x.path === f.path && x.part === l)));
+  if (half) {
+    settle({ tone: 'error', text: `${baseName(half.path)} is split between lists, and only part of it is picked. Roll it back from all its lists at once, or move its changes into one list first.` });
+    return;
+  }
+  files = files.filter((f, i) => files.findIndex(x => x.path === f.path) === i).map(({ tickKey: _key, part: _part, ...plain }) => plain);
   const gone = files.filter(f => f.status === '?').length;
   const back = files.length - gone;
   const added = files.some(f => ['A', 'C', 'R'].includes(f.status));
@@ -1678,8 +2126,24 @@ async function rollbackFiles(files) {
 function workMenu(v, row) {
   const files = rowFiles(row);
   const all = files.every(f => f.status === '?');
-  const ticked = files.every(f => v.ticked.has(f.path));
+  const ticked = files.every(f => v.ticked.has(tickKey(f)));
+  const cl = changelists(current);
+  const lists = [];
+  if (row.kind === 'group' && row.list) {
+    lists.push(
+      { label: 'Tick Only This List', disabled: !files.length, run: () => tickOnlyList(v, files) },
+      { label: 'Set Active', disabled: row.list === cl.active, run: () => setActiveList(row.list) },
+      { label: 'New Changelist…', run: () => newList() },
+      { label: 'Rename…', key: 'F2', run: () => renameList(row.list) },
+      { label: 'Delete List…', key: 'Del', danger: true, disabled: cl.lists.length < 2, run: () => deleteList(row.list) },
+      { sep: true },
+    );
+  } else if (row.list || (row.kind === 'pick' && row.files.some(f => f.status !== '?'))) {
+    for (const l of cl.lists) if (l.id !== row.list) lists.push({ label: `Move to ${l.name}`, run: () => moveToList(files, l.id) });
+    lists.push({ label: 'Move to New Changelist…', run: () => newList(files) }, { sep: true });
+  }
   return [
+    ...lists,
     ...(row.kind === 'file' ? [{ label: 'Show Diff', key: 'Enter', run: () => openFile(row.file.path) }] : []),
     { label: ticked ? 'Leave Out of the Commit' : 'Include in the Commit', key: 'Space', run: () => toggleTick(v, row) },
     { sep: true },
@@ -2518,14 +2982,14 @@ function moveCommit(step) {
   if (next) pickCommit(next);
 }
 
-function moveCursor(step) {
+function moveCursor(step, picking = false) {
   const v = view(current);
   const rows = visibleRows(v);
   if (!rows.length) return;
   const at = rows.findIndex(r => r.key === v.cursor);
   const next = rows[at < 0 ? 0 : Math.min(rows.length - 1, Math.max(0, at + step))];
   v.cursor = next.key;
-  if (next.kind === 'file' && v.diffOpen) {
+  if (next.kind === 'file' && v.diffOpen && !picking) {
     openFile(next.file.path);
   } else {
     renderTree();
@@ -2546,17 +3010,28 @@ function stepFile(step) {
 function treeKey(event) {
   const v = view(current);
   const row = visibleRows(v).find(r => r.key === v.cursor);
-  if (event.key === 'ArrowDown') moveCursor(1);
-  else if (event.key === 'ArrowUp') moveCursor(-1);
+  if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && event.shiftKey) {
+    // Shift+↑/↓ widens the pick from where it started.
+    if (!v.anchor) v.anchor = v.cursor;
+    moveCursor(event.key === 'ArrowDown' ? 1 : -1, true);
+    pickRange(v, visibleRows(v), v.anchor, v.cursor);
+    paintPicks(v);
+  } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    v.picked.clear();
+    v.anchor = null;
+    moveCursor(event.key === 'ArrowDown' ? 1 : -1);
+  }
   else if (event.key === 'Enter' && row) {
     if (row.kind === 'file') openFile(row.file.path);
     else toggleDir(v, row.id);
   } else if (event.key === 'ArrowLeft' && row && row.kind !== 'file') toggleDir(v, row.id, false);
   else if (event.key === 'ArrowRight' && row && row.kind !== 'file') toggleDir(v, row.id, true);
-  else if (event.key === ' ' && row && v.sel === WORK) toggleTick(v, row);
+  else if (event.key === ' ' && row && v.sel === WORK) toggleTick(v, pickedRow(v, row));
+  else if (event.key === 'F2' && row?.kind === 'group' && row.list && v.sel === WORK) renameList(row.list);
+  else if (event.key === 'Delete' && row?.kind === 'group' && row.list && v.sel === WORK) deleteList(row.list);
   else if ((event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && row && v.sel === WORK) {
     const box = $('tree').querySelector('.node.selected')?.getBoundingClientRect();
-    if (box) openMenu(box.left + 24, box.bottom, workMenu(v, row), $('tree'));
+    if (box) openMenu(box.left + 24, box.bottom, workMenu(v, pickedRow(v, row)), $('tree'));
   } else return false;
   return true;
 }
@@ -2759,6 +3234,7 @@ async function start() {
     hint: $('diff-hint'),
     layout: () => layout,
     pick: followDiff,
+    decorate: decorateDiff,
   });
   $('close-diff').onclick = closeDiff;
   $('undock-diff').onclick = undock;
@@ -2780,6 +3256,7 @@ async function start() {
   $('rollback').onclick = () => {
     if (current) rollbackFiles(tickedFiles(view(current)));
   };
+  $('new-list').onclick = () => current && newList();
   // The Uncommitted row's files: right-click for tick, diff and roll back.
   $('tree').addEventListener('contextmenu', event => {
     const node = event.target.closest('.node');
@@ -2788,10 +3265,15 @@ async function start() {
     const row = visibleRows(v).find(r => r.key === node.dataset.key);
     if (!row) return;
     event.preventDefault();
+    // A right-click outside the picked files picks just that row, as in PhpStorm.
+    if (!v.picked.has(row.key)) {
+      v.picked.clear();
+      v.anchor = row.key;
+    }
     v.cursor = row.key;
     renderTree();
     $('tree').focus({ preventScroll: true });
-    openMenu(event.clientX, event.clientY, workMenu(v, row), $('tree'));
+    openMenu(event.clientX, event.clientY, workMenu(v, pickedRow(v, row)), $('tree'));
   });
   $('help').onclick = event => {
     event.stopPropagation();

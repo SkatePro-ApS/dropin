@@ -84,6 +84,7 @@ fn main() {
             changes::changes,
             changes::working_diff,
             changes::commit,
+            changes::work_hunks,
             changes::rollback,
             changes::image,
             update::update_check,

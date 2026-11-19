@@ -287,6 +287,7 @@ async function loadRepos(select, fetch = false) {
   if (!repos.length) {
     current = null;
     $('repo-name').textContent = 'No repo';
+    api.invoke('watch_repo', { name: null }).catch(() => {});
     renderAll();
     return;
   }
@@ -395,6 +396,8 @@ async function switchTo(name, fetch = false) {
   $('repo-name').textContent = name;
   saved.set('repo', name);
   api.setTitle(`Push Commits to ${name}`);
+  // A commit made outside the window re-reads the list (repo-changed) without waiting for focus.
+  api.invoke('watch_repo', { name }).catch(() => {});
   const v = view(name);
   renderAll();
   if (v.data) loadFiles();

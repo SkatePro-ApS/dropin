@@ -34,7 +34,7 @@ row with a commit box, and image diffs. It works with any git repo; nothing in i
 | Branches | HEAD, Local and Remote in a tree with `/` folders and ↑↓ ahead/behind. Switch (Enter or double-click), new (Ctrl+Shift+N), rename (F2), delete (Del), delete on origin, rename or delete a folder, fetch all with prune. Ctrl+B hides the column. |
 | Commit | The **Uncommitted changes** row has a tree of Changes and Unversioned files with tri-state ticks. Commit (Ctrl+Enter), Commit and Push (Ctrl+Shift+Enter), Amend (off once HEAD is pushed), Rollback (Ctrl+Alt+Z). Only the ticked files go in the commit, and other staged files stay staged. |
 | Repos | Switch between repos from the header menu. **Add Repo…** opens a folder picker; **Remove…** only forgets a repo, it never touches its files. |
-| Window | Close hides it to the tray; quit from the tray menu or with `dropin quit`. Sizes, splits, column widths and the docked or undocked diff are restored on the next start. Light and dark follow Windows. |
+| Window | A commit, amend, rebase or branch switch made outside the window (a terminal, Claude) updates the lists within a second: the app watches the shown repo's branch refs. origin's side is fetched when the window gets focus. Close hides it to the tray; quit from the tray menu or with `dropin quit`. Sizes, splits, column widths and the docked or undocked diff are restored on the next start. Light and dark follow Windows. |
 | Updates | The button at the top right checks GitHub for a newer release (quietly on start and every 6 hours; a dot marks one). A click downloads it, checks its signature, installs it and restarts. |
 
 ## Installing

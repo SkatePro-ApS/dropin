@@ -9,6 +9,7 @@ mod pipe;
 mod prefs;
 mod repos;
 mod update;
+mod watch;
 
 use std::sync::Mutex;
 
@@ -46,6 +47,7 @@ fn main() {
         .manage(dialog::Waiting::default())
         .manage(dialog::Wanted::default())
         .manage(prefs::Prefs::load())
+        .manage(watch::Watching::default())
         .invoke_handler(tauri::generate_handler![
             list_repos,
             repos::repo_pick,
@@ -86,6 +88,7 @@ fn main() {
             changes::image,
             update::update_check,
             update::update_install,
+            watch::watch_repo,
         ])
         .setup(move |app| {
             tauri::async_runtime::spawn(pipe::serve(app.handle().clone(), server));
